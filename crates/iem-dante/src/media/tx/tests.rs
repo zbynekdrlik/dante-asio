@@ -1329,12 +1329,9 @@ fn place_pins_a_thread_to_the_configured_cpu_and_leaves_it_without_one() {
 
 #[cfg(windows)]
 #[test]
-fn a_windows_media_thread_gets_pro_audio_and_its_cpu() {
+fn a_windows_media_thread_gets_time_critical_and_its_cpu() {
     std::thread::spawn(|| {
-        assert!(
-            ask_realtime(45),
-            "MMCSS gives the thread Pro Audio, critical"
-        );
+        assert!(ask_realtime(45), "Windows gives the thread TIME_CRITICAL");
         assert!(pin_to_cpu(0), "CPU 0 exists on every runner");
         assert!(!pin_to_cpu(64), "past the first processor group");
     })

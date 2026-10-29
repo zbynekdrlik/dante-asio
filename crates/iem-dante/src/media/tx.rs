@@ -1018,22 +1018,18 @@ pub(crate) fn ask_realtime(priority: i32) -> bool {
     }
 }
 
-/// On Windows: the MMCSS "Pro Audio" task at its critical priority (the
-/// ASIO SDK's rule for a driver's audio threads), whatever `priority`; the
-/// task stays the thread's for its life. `false` when MMCSS refuses it.
+/// On Windows: the thread at THREAD_PRIORITY_TIME_CRITICAL, whatever
+/// `priority`: 31 in a REALTIME_PRIORITY_CLASS process (dante-asio's device
+/// process sets it; its threads have their own cores), above MMCSS's audio
+/// threads, which left the pump short of time on the FOH PC (missed blocks
+/// and TX holes at W 0.33 ms). `false` when Windows refuses it.
 #[cfg(windows)]
 pub(crate) fn ask_realtime(_priority: i32) -> bool {
     use windows_sys::Win32::System::Threading::{
-        AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority,
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
     };
-    let task: Vec<u16> = "Pro Audio".encode_utf16().chain(Some(0)).collect();
-    let mut index = 0u32;
-    // SAFETY: `task` is a NUL-terminated UTF-16 string and `index` a
-    // writable u32; the returned handle is the thread's MMCSS registration,
-    // kept for the thread's life (never reverted).
-    let h = unsafe { AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut index) };
-    // SAFETY: `h` is the registration just made.
-    !h.is_null() && unsafe { AvSetMmThreadPriority(h, AVRT_PRIORITY_CRITICAL) } != 0
+    // SAFETY: the calling thread's pseudo handle.
+    unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) != 0 }
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]

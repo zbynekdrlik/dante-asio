@@ -30,6 +30,9 @@ pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(),
     if own != 0 {
         crate::probe::set_affinity(own)?;
         info!(mask = format!("{own:#x}"), "the process on its own CPUs");
+        // Its threads alone on those CPUs: the process at REALTIME, so its
+        // media threads run at 31 (iem_dante's ask_realtime on Windows).
+        realtime_class()?;
     }
     let shape = Shape::new(cfg.rx.len() as u32, cfg.tx.len() as u32, cfg.block as u32)
         .ok_or("the channels (at most 64 each way) or the block do not fit the driver")?;
@@ -183,6 +186,27 @@ pub fn ask_stop(instance: u32) -> std::io::Result<()> {
     // SAFETY: a valid event handle.
     if unsafe { SetEvent(h) } == 0 {
         return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// This process at REALTIME_PRIORITY_CLASS (elevated: the logon task's
+/// highest privileges; otherwise Windows gives HIGH, which is reported).
+fn realtime_class() -> Result<(), String> {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, GetPriorityClass, REALTIME_PRIORITY_CLASS, SetPriorityClass,
+    };
+    // SAFETY: the pseudo handle of this process.
+    let set = unsafe { SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS) };
+    // SAFETY: as above.
+    let got = unsafe { GetPriorityClass(GetCurrentProcess()) };
+    if set == 0 || got != REALTIME_PRIORITY_CLASS {
+        warn!(
+            class = format!("{got:#x}"),
+            "the process is not at REALTIME"
+        );
+    } else {
+        info!("the process at REALTIME");
     }
     Ok(())
 }
