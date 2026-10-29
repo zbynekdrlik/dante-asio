@@ -26,9 +26,10 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # The bundle's checksums first.
 Get-Content (Join-Path $here "SHA256SUMS") | ForEach-Object {
-    $hash, $name = $_ -split "  ", 2
-    $got = (Get-FileHash (Join-Path $here $name) -Algorithm SHA256).Hash.ToLower()
-    if ($got -ne $hash) { throw "$name does not match SHA256SUMS" }
+    # Not $name: PowerShell names are case-blind, so it would overwrite -Name.
+    $hash, $file = $_ -split "  ", 2
+    $got = (Get-FileHash (Join-Path $here $file) -Algorithm SHA256).Hash.ToLower()
+    if ($got -ne $hash) { throw "$file does not match SHA256SUMS" }
 }
 
 $installed = Join-Path $env:ProgramFiles "dante-asio\dante-asio.exe"
