@@ -656,7 +656,7 @@ impl Job {
                 return Some(seq);
             }
             n = n.wrapping_add(1);
-            if n % 1024 == 0 {
+            if n.is_multiple_of(1024) {
                 if self.rt.stop.load(Ordering::Acquire) || Instant::now() >= until {
                     return None;
                 }
