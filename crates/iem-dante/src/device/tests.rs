@@ -1210,25 +1210,3 @@ fn a_fitted_state_is_logged_once_by_its_counts_only() {
     });
     assert_eq!(log, "");
 }
-
-#[test]
-fn rx_delay_is_per_channel_and_bounded() {
-    // dante-asio: a slow source's channels read later than P.
-    let with = |lines: &str| config_with("latency_ns =", &format!("latency_ns = 1000000\n{lines}"));
-    let cfg = DeviceConfig::from_toml(&with("rx_delay_ns = [[2, 50000000], [3, 0]]")).unwrap();
-    assert_eq!(cfg.rx_delay_ns, vec![(2, 50_000_000), (3, 0)]);
-    assert!(
-        DeviceConfig::from_toml(&with(""))
-            .unwrap()
-            .rx_delay_ns
-            .is_empty()
-    );
-    let refused = vec!["rx_delay_ns: [channel 1 to 32, 0 to 200000000 ns]".to_string()];
-    for bad in ["[[0, 1]]", "[[33, 1]]", "[[1, 200000001]]"] {
-        assert_eq!(
-            problems(&with(&format!("rx_delay_ns = {bad}"))),
-            refused,
-            "{bad}"
-        );
-    }
-}

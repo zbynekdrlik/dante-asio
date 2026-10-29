@@ -67,11 +67,6 @@ pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(),
         rx: (0..cfg.rx.len()).collect(),
         tx: engine_tx,
     };
-    // A slow source's channels read later than P (rx_delay_ns).
-    let mut delay = vec![0u64; cfg.rx.len()];
-    for &(ch, ns) in &cfg.rx_delay_ns {
-        delay[ch - 1] = iem_dante::clock::to_samples(ns, cfg.sample_rate);
-    }
     let pump = Pump::new(
         bridge,
         map,
@@ -80,8 +75,7 @@ pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(),
         Arc::clone(&media.rx),
         Arc::clone(&media.tx),
         Arc::clone(&stats),
-    )
-    .with_rx_delay(delay);
+    );
     let stop = Arc::new(AtomicBool::new(false));
     let pump = stream::spawn(Arc::clone(&media.clock), pump, Arc::clone(&stop))
         .map_err(|e| format!("the pump: {e}"))?;
