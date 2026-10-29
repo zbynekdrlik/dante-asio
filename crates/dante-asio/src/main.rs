@@ -12,6 +12,7 @@ fn usage() -> ExitCode {
     eprintln!(
         "usage: dante-asio run --instance <n> --config <device.toml> --ip <address>\n       \
          dante-asio register --instance <n> --dll <path>\n       \
+         dante-asio stop --instance <n>\n       \
          dante-asio unregister --instance <n>"
     );
     ExitCode::from(2)
@@ -41,6 +42,7 @@ fn main() -> ExitCode {
             Some(entries) => apply(&entries),
             None => return usage(),
         },
+        "stop" => stop(instance),
         "unregister" => match dante_asio::register::keys(instance) {
             Some(keys) => remove(&keys),
             None => return usage(),
@@ -73,6 +75,20 @@ fn apply(entries: &[dante_asio::register::Entry]) -> Result<(), String> {
 #[cfg(windows)]
 fn remove(keys: &[String]) -> Result<(), String> {
     dante_asio::register::remove(keys).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+fn stop(instance: u32) -> Result<(), String> {
+    match dante_asio::run::ask_stop(instance) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg(not(windows))]
+fn stop(_instance: u32) -> Result<(), String> {
+    Err("Windows only".into())
 }
 
 #[cfg(windows)]

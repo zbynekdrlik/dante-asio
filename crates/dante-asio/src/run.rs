@@ -76,13 +76,15 @@ pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(),
         latency_out = latency.1,
         "dante-asio instance serving"
     );
+    let stop_event = StopEvent::create(instance).map_err(|e| format!("the stop event: {e}"))?;
     let start = Instant::now();
     let why = loop {
         shared
             .header()
             .heartbeat_ms
             .store(start.elapsed().as_millis() as u64, Ordering::Release);
-        if asked.load(Ordering::Acquire) {
+        if asked.load(Ordering::Acquire) || stop_event.is_set() {
+            info!("a stop was asked");
             break None;
         }
         if let Some(e) = device.ended() {
@@ -100,4 +102,60 @@ pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(),
         None => Ok(()),
         Some(e) => Err(e),
     }
+}
+
+/// `Local\dante-asio-<n>-stop`: `dante-asio stop` sets it, the running
+/// instance ends as on Ctrl+C (never killed).
+pub struct StopEvent(windows_sys::Win32::Foundation::HANDLE);
+
+fn stop_name(instance: u32) -> Vec<u16> {
+    format!("Local\\dante-asio-{instance}-stop")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect()
+}
+
+impl StopEvent {
+    /// The running instance's event (manual reset, not set).
+    pub fn create(instance: u32) -> std::io::Result<StopEvent> {
+        use windows_sys::Win32::System::Threading::{CreateEventW, ResetEvent};
+        // SAFETY: a valid NUL-terminated name.
+        let h = unsafe { CreateEventW(std::ptr::null(), 1, 0, stop_name(instance).as_ptr()) };
+        if h.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: the event just opened (a leftover set one is cleared).
+        unsafe { ResetEvent(h) };
+        Ok(StopEvent(h))
+    }
+
+    fn is_set(&self) -> bool {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        // SAFETY: a valid event handle.
+        unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
+    }
+}
+
+impl Drop for StopEvent {
+    fn drop(&mut self) {
+        // SAFETY: the handle this struct owns.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+/// Asks instance `instance` to stop; `NotFound` when none runs.
+pub fn ask_stop(instance: u32) -> std::io::Result<()> {
+    use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW, SetEvent};
+    // SAFETY: a valid name.
+    let h = unsafe { OpenEventW(EVENT_MODIFY_STATE, 0, stop_name(instance).as_ptr()) };
+    if h.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+    let _owned = StopEvent(h);
+    // SAFETY: a valid event handle.
+    if unsafe { SetEvent(h) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }

@@ -51,3 +51,27 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - run: python3 scripts/check_version.py origin/${{ github.base_ref }}
+
+  bundle:
+    needs: [fmt, test]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo build --release --locked -p dante-asio -p asio-driver
+      - name: Stage the bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force bundle | Out-Null
+          Copy-Item target/release/dante-asio.exe, target/release/dante_asio_driver.dll, scripts/install.ps1, scripts/uninstall.ps1 bundle/
+          Get-FileHash bundle/* -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content bundle/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dante-asio-${{ github.sha }}
+          path: bundle/
+          if-no-files-found: error
+
