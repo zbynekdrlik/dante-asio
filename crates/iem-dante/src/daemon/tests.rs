@@ -862,6 +862,8 @@ fn v4(addr: SocketAddr) -> SocketAddrV4 {
 /// The daemon's sockets on loopback and their addresses, and receivers
 /// standing in for the info and heartbeat groups (a heartbeat period no
 /// test waits for: only the first, immediate, beat).
+// Some parts serve only the control-socket test (unix).
+#[cfg_attr(not(unix), allow(dead_code))]
 struct Loopback {
     sockets: Sockets,
     arc: SocketAddr,
@@ -904,6 +906,8 @@ fn media_of(shared: &Arc<Mutex<Device>>) -> Arc<Media> {
     media_on(&shared.lock().unwrap(), Arc::new(Unready))
 }
 
+// Some parts serve only the control-socket test (unix).
+#[cfg_attr(not(unix), allow(dead_code))]
 async fn recv(sock: &UdpSocket) -> Vec<u8> {
     let mut buf = [0u8; 2048];
     let (n, _) = tokio::time::timeout(BOUND, sock.recv_from(&mut buf))

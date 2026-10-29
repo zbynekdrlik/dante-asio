@@ -229,7 +229,7 @@ mod win_nic {
                             .collect::<Vec<_>>()
                             .join(":");
                         let speed = (ad.ReceiveLinkSpeed != 0 && ad.ReceiveLinkSpeed != u64::MAX)
-                            .then(|| ad.ReceiveLinkSpeed / 1_000_000);
+                            .then_some(ad.ReceiveLinkSpeed / 1_000_000);
                         return Ok((mac, speed));
                     }
                 }
