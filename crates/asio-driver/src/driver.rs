@@ -273,6 +273,13 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
         shape: st.shape.unwrap_or(NO_DEVICE_SHAPE),
         instance: d.instance,
         rt: Arc::clone(&d.rt),
+        seen: d
+            .rt
+            .shm
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, |s| s.header().seq.load(Ordering::Acquire)),
     };
     d.rt.position.store(0, Ordering::Relaxed);
     match std::thread::Builder::new()
@@ -566,6 +573,10 @@ struct Job {
     shape: Shape,
     instance: u32,
     rt: Arc<Rt>,
+    /// The device's seq when `start` was called: the first block handed
+    /// over is the next one (read on the host's thread, so a block published
+    /// right after `start` is never missed).
+    seen: u64,
 }
 
 impl Job {
@@ -593,9 +604,7 @@ impl Job {
         let mut next = Instant::now();
         let mut half = 0i32;
         let mut checked = Instant::now();
-        let mut last = shm
-            .as_ref()
-            .map_or(0, |s| s.header().seq.load(Ordering::Acquire));
+        let mut last = self.seen;
         while !self.rt.stop.load(Ordering::Acquire) {
             match shm.as_ref() {
                 Some(s) => {
