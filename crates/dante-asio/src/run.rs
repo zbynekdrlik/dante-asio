@@ -106,6 +106,7 @@ pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(),
                 max_process_us = v.max_process_us,
                 "counts"
             );
+            info!(status = %iem_dante::ctl::answer("status", &media), "device status");
         }
         if asked.load(Ordering::Acquire) || stop_event.is_set() {
             info!("a stop was asked");
