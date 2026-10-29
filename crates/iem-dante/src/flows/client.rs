@@ -138,11 +138,35 @@ impl Client {
     ) -> Result<Vec<u8>, ClientError> {
         let deadline = Instant::now() + wait;
         let sock = UdpSocket::bind(SocketAddr::V4(SocketAddrV4::new(self.ip, 0))).await?;
-        sock.connect(SocketAddr::V4(to)).await?;
-        sock.send(datagram).await?;
+        // A transmitter at the flow-control port answers from it: a
+        // connected socket, which also hears a closed port at once. One at
+        // another port (Dante Virtual Soundcard advertises another and
+        // answers from 4455, dante-asio 2026-10-29: its replies were
+        // dropped, each retry took a new flow, until it refused 0x0315,
+        // too many TX flows) is answered from any port of its address.
+        let connected = to.port() == super::control::PORT;
+        if connected {
+            sock.connect(SocketAddr::V4(to)).await?;
+            sock.send(datagram).await?;
+        } else {
+            sock.send_to(datagram, SocketAddr::V4(to)).await?;
+        }
         let mut buf = [0u8; RECV_BUFFER];
         loop {
-            let n = match tokio::time::timeout_at(deadline, sock.recv(&mut buf)).await {
+            let got = if connected {
+                tokio::time::timeout_at(deadline, sock.recv(&mut buf)).await
+            } else {
+                tokio::time::timeout_at(deadline, async {
+                    loop {
+                        let (n, from) = sock.recv_from(&mut buf).await?;
+                        if from.ip() == std::net::IpAddr::V4(*to.ip()) {
+                            return Ok(n);
+                        }
+                    }
+                })
+                .await
+            };
+            let n = match got {
                 Ok(got) => got?,
                 Err(_) => {
                     debug!(

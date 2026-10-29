@@ -216,11 +216,10 @@ async fn a_stop_to_a_silent_transmitter_ends_within_1_s() {
 
 #[tokio::test]
 async fn a_closed_port_is_an_error_at_once_not_a_wait() {
-    // A port nobody holds: loopback answers with port unreachable.
-    let closed = {
-        let s = std::net::UdpSocket::bind((LOOPBACK, 0)).unwrap();
-        v4(s.local_addr().unwrap())
-    };
+    // The flow-control port with nobody at it: loopback answers with port
+    // unreachable, heard at once by the connected socket a request to 4455
+    // uses (a request to another port listens to any port of the address).
+    let closed = SocketAddrV4::new(LOOPBACK, crate::flows::control::PORT);
     let client = Client::new(LOOPBACK);
     let started = std::time::Instant::now();
     let err = bounded(client.request_flow(closed, &req(SocketAddrV4::new(LOOPBACK, 1), 96_000)))
@@ -261,4 +260,35 @@ fn a_reply_matches_by_sequence_and_opcode_only() {
     for n in 0..wire::HEADER_LEN {
         assert_eq!(reply_of(&ok[..n], 5, op::REQUEST), None);
     }
+}
+
+/// A transmitter that takes requests at one port and answers from another
+/// (as Dante Virtual Soundcard: its record's port, replies from 4455).
+async fn answering_from_another_port() -> SocketAddrV4 {
+    let rx = UdpSocket::bind((LOOPBACK, 0)).await.unwrap();
+    let tx = UdpSocket::bind((LOOPBACK, 0)).await.unwrap();
+    let at = v4(rx.local_addr().unwrap());
+    tokio::spawn(async move {
+        let mut buf = [0u8; 2048];
+        let mut table = TxTable::new(7);
+        let cfg = cfg();
+        while let Ok((n, from)) = rx.recv_from(&mut buf).await {
+            if let FlowOutcome::Reply(bytes) = handle(&mut table, &cfg, v4(from), &buf[..n], 0) {
+                tx.send_to(&bytes, from).await.unwrap();
+            }
+        }
+    });
+    at
+}
+
+#[tokio::test]
+async fn a_transmitter_answering_from_another_port_is_heard() {
+    let at = answering_from_another_port().await;
+    assert_ne!(at.port(), crate::flows::control::PORT);
+    let client = Client::new(LOOPBACK);
+    let rx = SocketAddrV4::new(LOOPBACK, 40_000);
+    let h = bounded(client.request_flow(at, &req(rx, 96_000)))
+        .await
+        .expect("the reply from the other port is the answer");
+    assert_eq!(h.len(), 6);
 }
