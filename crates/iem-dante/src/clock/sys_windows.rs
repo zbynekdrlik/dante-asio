@@ -17,9 +17,12 @@ use windows_sys::Win32::System::Threading::{
 
 /// 100 ns intervals from 1601-01-01 to 1970-01-01.
 const UNIX_EPOCH_FT: i64 = 116_444_736_000_000_000;
-/// The last stretch of a sleep is spun, not slept: the timer wakes up to
-/// about half a millisecond late.
-const SPIN_NS: i64 = 600_000;
+/// Waits up to this long are spun (yielding), never slept: on the FOH PC
+/// the media threads, alone on their CPUs at priority 31, still woke past
+/// 2.7 ms now and then while the CPUs themselves were never held over
+/// 0.2 ms (`dante-asio jitter`): the waitable timer's late wakes. Longer
+/// waits (the clock not ready) sleep on the timer, the last 50 ms spun.
+const SPIN_NS: i64 = 50_000_000;
 
 /// The precise system time, ns since 1970.
 pub fn realtime_ns() -> i64 {
