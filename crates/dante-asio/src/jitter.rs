@@ -21,7 +21,8 @@ pub struct Jitter {
 pub fn jitter(cpu: usize, seconds: u64) -> Result<Jitter, String> {
     use windows_sys::Win32::System::Threading::{
         GetCurrentProcess, GetCurrentThread, REALTIME_PRIORITY_CLASS, SetPriorityClass,
-        SetThreadAffinityMask, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+        SetProcessAffinityMask, SetThreadAffinityMask, SetThreadPriority,
+        THREAD_PRIORITY_TIME_CRITICAL,
     };
     if cpu >= 64 {
         return Err("CPU past the first group".into());
@@ -30,6 +31,8 @@ pub fn jitter(cpu: usize, seconds: u64) -> Result<Jitter, String> {
         // SAFETY: this process's and this thread's pseudo handles.
         unsafe {
             SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
+            // The process's set first: a thread cannot leave it (error 87).
+            SetProcessAffinityMask(GetCurrentProcess(), 1usize << cpu);
             if SetThreadAffinityMask(GetCurrentThread(), 1usize << cpu) == 0 {
                 return Err(format!("CPU {cpu}: {}", std::io::Error::last_os_error()));
             }
