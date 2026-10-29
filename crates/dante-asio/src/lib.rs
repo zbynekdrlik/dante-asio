@@ -7,6 +7,8 @@
 //! reports ([`latencies`]).
 
 pub mod bridge;
+#[cfg(windows)]
+pub mod probe;
 pub mod register;
 #[cfg(windows)]
 pub mod run;

@@ -10,9 +10,10 @@ use std::process::ExitCode;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: dante-asio run --instance <n> --config <device.toml> --ip <address>\n       \
+        "usage: dante-asio run --instance <n> --config <device.toml> --ip <address> [--log <file>]\n       \
          dante-asio register --instance <n> --dll <path>\n       \
          dante-asio stop --instance <n>\n       \
+         dante-asio probe --instance <n> [--seconds <s>]\n       \
          dante-asio unregister --instance <n>"
     );
     ExitCode::from(2)
@@ -23,12 +24,27 @@ fn flag(args: &[String], name: &str) -> Option<String> {
 }
 
 fn main() -> ExitCode {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let filter =
+        || tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    // `--log <path>`: appended to that file (the logon task has no console).
+    match flag(&args, "--log").map(|p| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+    }) {
+        Some(Ok(file)) => tracing_subscriber::fmt()
+            .with_env_filter(filter())
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(file))
+            .init(),
+        Some(Err(e)) => {
+            eprintln!("dante-asio: the log file: {e}");
+            return ExitCode::FAILURE;
+        }
+        None => tracing_subscriber::fmt().with_env_filter(filter()).init(),
+    }
     let Some(cmd) = args.first() else {
         return usage();
     };
@@ -43,6 +59,12 @@ fn main() -> ExitCode {
             None => return usage(),
         },
         "stop" => stop(instance),
+        "probe" => {
+            let seconds = flag(&args, "--seconds")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(10);
+            probe(instance, seconds)
+        }
         "unregister" => match dante_asio::register::keys(instance) {
             Some(keys) => remove(&keys),
             None => return usage(),
@@ -84,6 +106,31 @@ fn stop(instance: u32) -> Result<(), String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e.to_string()),
     }
+}
+
+#[cfg(windows)]
+fn probe(instance: u32, seconds: u64) -> Result<(), String> {
+    let r = dante_asio::probe::probe(instance, seconds)?;
+    let min = r.round_trips.iter().min();
+    let max = r.round_trips.iter().max();
+    println!(
+        "probe instance {instance}: block {} latency_in {} latency_out {} switches {} emitted {} arrived {} round_trip_min {:?} round_trip_max {:?} late {}",
+        r.block,
+        r.latency_in,
+        r.latency_out,
+        r.switches,
+        r.emitted,
+        r.round_trips.len(),
+        min,
+        max,
+        r.late
+    );
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn probe(_instance: u32, _seconds: u64) -> Result<(), String> {
+    Err("Windows only".into())
 }
 
 #[cfg(not(windows))]

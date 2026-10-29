@@ -54,11 +54,21 @@ $exe = Join-Path $bin "dante-asio.exe"
 & $exe register --instance $Instance --dll (Join-Path $bin "dante_asio_driver.dll")
 if ($LASTEXITCODE -ne 0) { throw "register failed ($LASTEXITCODE)" }
 
-$args = "run --instance $Instance --config `"$cfg`" --ip $Ip"
-$action = New-ScheduledTaskAction -Execute $exe -Argument $args -WorkingDirectory $data
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Highest
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries
-Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+# The logged-on user, machine-qualified (a bare name is refused); the task's
+# process at normal priority (a task's default is below normal); its log in
+# the instance's folder.
+$user = "$env:COMPUTERNAME\$env:USERNAME"
+$run = "run --instance $Instance --config `"$cfg`" --ip $Ip --log `"$(Join-Path $data 'dante-asio.log')`""
+$action = New-ScheduledTaskAction -Execute $exe -Argument $run -WorkingDirectory $data
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -Priority 4 -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$registered = Register-ScheduledTask -TaskName $task -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
+if (-not $registered) { throw "the task $task was not registered" }
 Start-ScheduledTask -TaskName $task
+$deadline = (Get-Date).AddSeconds(10)
+while ((Get-ScheduledTask -TaskName $task).State -ne "Running") {
+    if ((Get-Date) -gt $deadline) { throw "the task $task did not start" }
+    Start-Sleep -Milliseconds 200
+}
 Write-Output "dante-asio instance $Instance installed and started"
