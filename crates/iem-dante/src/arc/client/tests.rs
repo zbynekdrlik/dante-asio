@@ -749,6 +749,13 @@ fn a_silent_device_ends_the_request_at_its_wait_and_a_stopped_read_sends_nothing
     assert_eq!(requests.counts().sent.len(), 1);
 }
 
+/// What a connected UDP socket's receive says after a closed port's ICMP
+/// unreachable: Linux ECONNREFUSED, Windows WSAECONNRESET.
+#[cfg(not(windows))]
+const REFUSED: io::ErrorKind = io::ErrorKind::ConnectionRefused;
+#[cfg(windows)]
+const REFUSED: io::ErrorKind = io::ErrorKind::ConnectionReset;
+
 #[test]
 fn a_closed_port_is_a_socket_error_at_once() {
     let closed = UdpSocket::bind((LOOPBACK, 0)).unwrap();
@@ -766,7 +773,7 @@ fn a_closed_port_is_a_socket_error_at_once() {
         err,
         ReadError::Io {
             op: op::COUNTS,
-            kind: io::ErrorKind::ConnectionRefused
+            kind: REFUSED
         }
     );
     assert!(t.elapsed() < BOUND);

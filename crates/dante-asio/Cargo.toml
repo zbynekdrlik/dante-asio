@@ -1,0 +1,21 @@
+[package]
+name = "dante-asio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "dante-asio's device process: one Dante device per instance, its audio through the shared memory to the ASIO driver"
+
+[dependencies]
+audio-io = { path = "../audio-io" }
+iem-dante = { path = "../iem-dante" }
+shm = { path = "../shm" }
+asio-driver = { path = "../asio-driver" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_Registry",
+] }

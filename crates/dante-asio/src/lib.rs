@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! dante-asio's device process (plan Task 7): one instance's Dante device
+//! (the stack copied from iemmixer) whose pump hands each block to the
+//! instance's ASIO driver through the shared memory ([`bridge`]), the
+//! driver's registration ([`register`]) and the latencies the driver
+//! reports ([`latencies`]).
+
+pub mod bridge;
+pub mod register;
+#[cfg(windows)]
+pub mod run;
+
+use iem_dante::clock::to_samples;
+use iem_dante::device::DeviceConfig;
+use iem_dante::stream::Timing;
+
+/// The pump's timing on `cfg`: B = its block, P = its latency, W = its
+/// work margin (the DAW's time to return a block).
+pub fn timing(cfg: &DeviceConfig) -> Timing {
+    Timing {
+        block: cfg.block,
+        playout: to_samples(cfg.latency_ns, cfg.sample_rate),
+        margin: cfg.work_margin,
+    }
+}
+
+/// The DAW's input and output latency, samples: a block reaches the DAW
+/// B + P after its first input sample was stamped; its outputs play W +
+/// the advertised TX latency after the hand-over (receivers play our flows
+/// at that latency).
+pub fn latencies(cfg: &DeviceConfig) -> (u32, u32) {
+    let t = timing(cfg);
+    let tx = to_samples(cfg.tx_latency_ns.unwrap_or(cfg.latency_ns), cfg.sample_rate);
+    ((t.block + t.playout) as u32, (t.margin + tx) as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DEVICE: &str = include_str!("../../../config/test-dante-device.toml");
+
+    #[test]
+    fn latencies_follow_the_device_s_timing() {
+        let mut cfg = DeviceConfig::from_toml(DEVICE).unwrap();
+        cfg.block = 32;
+        cfg.latency_ns = 1_000_000;
+        cfg.work_margin = 64;
+        cfg.tx_latency_ns = Some(250_000);
+        let t = timing(&cfg);
+        assert_eq!((t.block, t.playout, t.margin), (32, 96, 64));
+        assert_eq!(latencies(&cfg), (32 + 96, 64 + 24));
+    }
+}

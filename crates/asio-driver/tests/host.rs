@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use dante_asio::abi::*;
-use dante_asio::ident::clsid;
+use dante_asio_driver::abi::*;
+use dante_asio_driver::ident::clsid;
 use shm::{Shape, Shared};
 
 #[test]
@@ -30,7 +30,7 @@ fn driver(n: u32) -> *mut c_void {
     let id = clsid(n).unwrap();
     let mut factory: *mut c_void = core::ptr::null_mut();
     // SAFETY: valid pointers.
-    let hr = unsafe { dante_asio::DllGetClassObject(&id, &IID_ICLASSFACTORY, &mut factory) };
+    let hr = unsafe { dante_asio_driver::DllGetClassObject(&id, &IID_ICLASSFACTORY, &mut factory) };
     assert_eq!(hr, S_OK);
     // SAFETY: the factory just made.
     let fv = unsafe { &**(factory as *const *const IClassFactoryVtbl) };
@@ -224,7 +224,7 @@ fn an_unknown_clsid_is_not_available() {
     other.data1 ^= 0xff;
     let mut f: *mut c_void = core::ptr::null_mut();
     // SAFETY: valid pointers.
-    let hr = unsafe { dante_asio::DllGetClassObject(&other, &IID_ICLASSFACTORY, &mut f) };
+    let hr = unsafe { dante_asio_driver::DllGetClassObject(&other, &IID_ICLASSFACTORY, &mut f) };
     assert_eq!(hr, CLASS_E_CLASSNOTAVAILABLE);
     assert!(f.is_null());
 }

@@ -7,7 +7,7 @@ publish = false
 description = "dante-asio's ASIO driver: an in-process COM server a DAW loads, one CLSID per instance, its audio through the instance's shared memory"
 
 [lib]
-name = "dante_asio"
+name = "dante_asio_driver"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
