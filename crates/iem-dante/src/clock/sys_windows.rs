@@ -91,7 +91,10 @@ pub fn sleep_until_monotonic(target: i64) {
             std::thread::sleep(std::time::Duration::from_nanos((left - SPIN_NS) as u64));
         }
     }
+    // The spin yields: the media threads share cores on Windows (the FOH
+    // PC gives the device two), and a plain spin kept the RX thread off its
+    // core (RX packets up to 48 ms late, 2026-10-29).
     while monotonic_ns() < target {
-        std::hint::spin_loop();
+        std::thread::yield_now();
     }
 }
