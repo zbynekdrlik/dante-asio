@@ -28,8 +28,14 @@ pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(),
         .filter(|&c| c < 64)
         .fold(0, |m, c| m | 1 << c);
     if own != 0 {
-        crate::probe::set_affinity(own)?;
-        info!(mask = format!("{own:#x}"), "the process on its own CPUs");
+        // The media threads pin to `own`; the process keeps the CPUs it
+        // started with too, for its other threads (the device's runtime,
+        // mDNS, the log): confined to `own` they could not run beside two
+        // spinning priority-31 threads, and a lock one of them held kept
+        // the TX thread waiting 2.5 to 15 ms (FOH PC, 2026-10-29).
+        let mask = started_cpus() | own;
+        crate::probe::set_affinity(mask)?;
+        info!(mask = format!("{mask:#x}"), "the process's CPUs");
         // Its threads alone on those CPUs: the process at REALTIME, so its
         // media threads run at 31 (iem_dante's ask_realtime on Windows).
         realtime_class()?;
@@ -209,4 +215,15 @@ fn realtime_class() -> Result<(), String> {
         info!("the process at REALTIME");
     }
     Ok(())
+}
+
+/// The CPUs this process started with (its parent's set).
+fn started_cpus() -> usize {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessAffinityMask};
+    let (mut process, mut system) = (0usize, 0usize);
+    // SAFETY: this process's pseudo handle and two writable masks.
+    if unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut process, &mut system) } == 0 {
+        return 0;
+    }
+    process
 }
