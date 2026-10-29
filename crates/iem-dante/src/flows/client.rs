@@ -138,34 +138,22 @@ impl Client {
     ) -> Result<Vec<u8>, ClientError> {
         let deadline = Instant::now() + wait;
         let sock = UdpSocket::bind(SocketAddr::V4(SocketAddrV4::new(self.ip, 0))).await?;
-        // A transmitter at the flow-control port answers from it: a
-        // connected socket, which also hears a closed port at once. One at
-        // another port (Dante Virtual Soundcard advertises another and
-        // answers from 4455, dante-asio 2026-10-29: its replies were
-        // dropped, each retry took a new flow, until it refused 0x0315,
-        // too many TX flows) is answered from any port of its address.
-        let connected = to.port() == super::control::PORT;
-        if connected {
-            sock.connect(SocketAddr::V4(to)).await?;
-            sock.send(datagram).await?;
-        } else {
-            sock.send_to(datagram, SocketAddr::V4(to)).await?;
-        }
+        // The reply is told by its sequence number and opcode, whatever
+        // sends it: Dante Virtual Soundcard on a multi-homed PC takes the
+        // request at one address and answers from another (FOH PC,
+        // 2026-10-29: requests to .7.107, OK replies from .9.201, pktmon).
+        // A connected socket dropped those replies: each retry took another
+        // flow until DVS refused 0x0315 (too many TX flows). Unconnected,
+        // a closed port is heard at once on Windows (WSAECONNRESET) and
+        // costs the wait on Linux, which reports ICMP to connected sockets
+        // only.
+        sock.send_to(datagram, SocketAddr::V4(to)).await?;
         let mut buf = [0u8; RECV_BUFFER];
         loop {
-            let got = if connected {
-                tokio::time::timeout_at(deadline, sock.recv(&mut buf)).await
-            } else {
-                tokio::time::timeout_at(deadline, async {
-                    loop {
-                        let (n, from) = sock.recv_from(&mut buf).await?;
-                        if from.ip() == std::net::IpAddr::V4(*to.ip()) {
-                            return Ok(n);
-                        }
-                    }
-                })
-                .await
-            };
+            let got = tokio::time::timeout_at(deadline, async {
+                sock.recv_from(&mut buf).await.map(|(n, _)| n)
+            })
+            .await;
             let n = match got {
                 Ok(got) => got?,
                 Err(_) => {

@@ -214,12 +214,14 @@ async fn a_stop_to_a_silent_transmitter_ends_within_1_s() {
     assert_eq!(REPLY_TIMEOUT, Duration::from_secs(3));
 }
 
+/// Windows reports a closed port to an unconnected socket at once.
+#[cfg(windows)]
 #[tokio::test]
 async fn a_closed_port_is_an_error_at_once_not_a_wait() {
-    // The flow-control port with nobody at it: loopback answers with port
-    // unreachable, heard at once by the connected socket a request to 4455
-    // uses (a request to another port listens to any port of the address).
-    let closed = SocketAddrV4::new(LOOPBACK, crate::flows::control::PORT);
+    let closed = {
+        let s = std::net::UdpSocket::bind((LOOPBACK, 0)).unwrap();
+        v4(s.local_addr().unwrap())
+    };
     let client = Client::new(LOOPBACK);
     let started = std::time::Instant::now();
     let err = bounded(client.request_flow(closed, &req(SocketAddrV4::new(LOOPBACK, 1), 96_000)))
@@ -227,6 +229,22 @@ async fn a_closed_port_is_an_error_at_once_not_a_wait() {
         .unwrap_err();
     assert!(matches!(err, ClientError::Io(_)), "{err:?}");
     assert!(started.elapsed() < Duration::from_secs(2));
+}
+
+/// Linux reports ICMP to connected sockets only: a closed port costs the
+/// request's wait, then a timeout.
+#[cfg(not(windows))]
+#[tokio::test]
+async fn a_closed_port_is_a_timeout() {
+    let closed = {
+        let s = std::net::UdpSocket::bind((LOOPBACK, 0)).unwrap();
+        v4(s.local_addr().unwrap())
+    };
+    let client = Client::new(LOOPBACK);
+    let err = bounded(client.request_flow(closed, &req(SocketAddrV4::new(LOOPBACK, 1), 96_000)))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, ClientError::Timeout), "{err:?}");
 }
 
 #[test]
@@ -262,8 +280,8 @@ fn a_reply_matches_by_sequence_and_opcode_only() {
     }
 }
 
-/// A transmitter that takes requests at one port and answers from another
-/// (as Dante Virtual Soundcard: its record's port, replies from 4455).
+/// A transmitter that takes requests at one socket and answers from another
+/// (as Dante Virtual Soundcard on a multi-homed PC: another address there).
 async fn answering_from_another_port() -> SocketAddrV4 {
     let rx = UdpSocket::bind((LOOPBACK, 0)).await.unwrap();
     let tx = UdpSocket::bind((LOOPBACK, 0)).await.unwrap();
@@ -284,7 +302,6 @@ async fn answering_from_another_port() -> SocketAddrV4 {
 #[tokio::test]
 async fn a_transmitter_answering_from_another_port_is_heard() {
     let at = answering_from_another_port().await;
-    assert_ne!(at.port(), crate::flows::control::PORT);
     let client = Client::new(LOOPBACK);
     let rx = SocketAddrV4::new(LOOPBACK, 40_000);
     let h = bounded(client.request_flow(at, &req(rx, 96_000)))
