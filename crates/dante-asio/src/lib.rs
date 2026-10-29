@@ -8,6 +8,8 @@
 
 pub mod bridge;
 #[cfg(windows)]
+pub mod jitter;
+#[cfg(windows)]
 pub mod probe;
 pub mod register;
 #[cfg(windows)]

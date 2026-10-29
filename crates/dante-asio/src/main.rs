@@ -14,6 +14,7 @@ fn usage() -> ExitCode {
          dante-asio register --instance <n> --dll <path>\n       \
          dante-asio stop --instance <n>\n       \
          dante-asio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
+         dante-asio jitter --cpus <n,n,..> --seconds <s>\n       \
          dante-asio unregister --instance <n>"
     );
     ExitCode::from(2)
@@ -53,6 +54,21 @@ fn main() -> ExitCode {
     let Some(cmd) = args.first() else {
         return usage();
     };
+    if cmd == "jitter" {
+        let (Some(cpus), Some(seconds)) = (
+            flag(&args, "--cpus"),
+            flag(&args, "--seconds").and_then(|s| s.parse::<u64>().ok()),
+        ) else {
+            return usage();
+        };
+        return match jitter(&cpus, seconds) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("dante-asio: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let Some(instance) = flag(&args, "--instance").and_then(|n| n.parse::<u32>().ok()) else {
         return usage();
     };
@@ -186,3 +202,22 @@ fn hide_console() {
 
 #[cfg(not(windows))]
 fn hide_console() {}
+
+/// `--cpus 14,15,0`: one run per CPU, one line each.
+#[cfg(windows)]
+fn jitter(cpus: &str, seconds: u64) -> Result<(), String> {
+    for c in cpus.split(',') {
+        let cpu: usize = c.trim().parse().map_err(|_| format!("not a CPU: {c}"))?;
+        let j = dante_asio::jitter::jitter(cpu, seconds)?;
+        println!(
+            "jitter cpu {}: over_50us {} over_500us {} over_2ms {} longest_us {}",
+            j.cpu, j.over_50us, j.over_500us, j.over_2ms, j.longest_us
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn jitter(_cpus: &str, _seconds: u64) -> Result<(), String> {
+    Err("Windows only".into())
+}
