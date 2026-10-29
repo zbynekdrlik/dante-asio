@@ -20,7 +20,8 @@ use std::time::{Duration, Instant};
 use shm::{Shape, Shared};
 use windows_sys::Win32::Media::timeGetTime;
 use windows_sys::Win32::System::Threading::{
-    AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority,
+    AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority, GetCurrentThread,
+    SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
 };
 
 use crate::abi::*;
@@ -727,9 +728,12 @@ fn pro_audio() {
     // SAFETY: a NUL-terminated name and a writable index; the registration
     // is kept for the thread's life.
     let h = unsafe { AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut index) };
-    if !h.is_null() {
-        // SAFETY: the registration just made.
-        unsafe { AvSetMmThreadPriority(h, AVRT_PRIORITY_CRITICAL) };
+    // SAFETY: the registration just made.
+    let mmcss = !h.is_null() && unsafe { AvSetMmThreadPriority(h, AVRT_PRIORITY_CRITICAL) } != 0;
+    if !mmcss {
+        // Without MMCSS the thread still runs above the DAW's own threads.
+        // SAFETY: the calling thread's pseudo handle.
+        unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) };
     }
 }
 

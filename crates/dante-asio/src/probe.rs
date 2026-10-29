@@ -189,6 +189,21 @@ pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
     Ok(report)
 }
 
+/// This process at High priority, as a DAW runs (Ableton does).
+pub fn high_priority() -> Result<(), String> {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, HIGH_PRIORITY_CLASS, SetPriorityClass,
+    };
+    // SAFETY: the pseudo handle of this process.
+    if unsafe { SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS) } == 0 {
+        return Err(format!(
+            "High priority: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
 /// This process's CPUs (`mask`, one bit a CPU of the first group).
 pub fn set_affinity(mask: usize) -> Result<(), String> {
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessAffinityMask};

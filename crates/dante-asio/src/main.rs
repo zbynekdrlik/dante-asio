@@ -117,6 +117,7 @@ fn probe(instance: u32, seconds: u64, affinity: Option<usize>) -> Result<(), Str
     if let Some(mask) = affinity {
         dante_asio::probe::set_affinity(mask)?;
     }
+    dante_asio::probe::high_priority()?;
     let r = dante_asio::probe::probe(instance, seconds)?;
     let min = r.round_trips.iter().min();
     let max = r.round_trips.iter().max();
