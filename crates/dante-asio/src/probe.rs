@@ -77,10 +77,10 @@ unsafe extern "C" fn switch(half: i32, _direct: ASIOBool) {
         for k in 0..n {
             // SAFETY: the driver's buffer of `n` samples.
             let v = unsafe { inp.add(k).read() };
-            if v.unsigned_abs() >= ONSET as u32 {
-                if let Some(e) = s.last_emit.take() {
-                    s.round_trips.push(s.position + k as u64 - e);
-                }
+            if v.unsigned_abs() >= ONSET as u32
+                && let Some(e) = s.last_emit.take()
+            {
+                s.round_trips.push(s.position + k as u64 - e);
             }
         }
     }
