@@ -19,6 +19,18 @@ use crate::bridge::{Bridge, SharedLink};
 /// Runs instance `instance` from the device config at `config` on `ip`.
 pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(), String> {
     let cfg = host::read_config(&config).map_err(|e| e.to_string())?;
+    // The process on its own cores first: it starts with its parent's set
+    // (on the FOH PC Process Lasso moves it later), and a thread cannot be
+    // pinned outside its process's set (error 87 there).
+    let own: usize = [cfg.pump_cpu, cfg.io_cpu]
+        .into_iter()
+        .flatten()
+        .filter(|&c| c < 64)
+        .fold(0, |m, c| m | 1 << c);
+    if own != 0 {
+        crate::probe::set_affinity(own)?;
+        info!(mask = format!("{own:#x}"), "the process on its own CPUs");
+    }
     let shape = Shape::new(cfg.rx.len() as u32, cfg.tx.len() as u32, cfg.block as u32)
         .ok_or("the channels (at most 64 each way) or the block do not fit the driver")?;
     let opts = Options {
