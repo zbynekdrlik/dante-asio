@@ -36,6 +36,8 @@ pub const NO_DEVICE_SHAPE: Shape = Shape {
     tx: 8,
     block: 32,
 };
+/// Spin rounds before the worker sleeps on the block event (a few µs).
+const SPIN_ROUNDS: u32 = 2_000;
 /// A device silent this long is treated as gone (free-run).
 const QUIET: Duration = Duration::from_millis(50);
 
@@ -609,11 +611,8 @@ impl Job {
         while !self.rt.stop.load(Ordering::Acquire) {
             match shm.as_ref() {
                 Some(s) => {
-                    // The next block is watched in the header (a spin): an
-                    // event's wake came only every ~15 ms on the FOH PC
-                    // (the probe, 2026-10-29: 70 hand-overs a second of
-                    // 3000). Past QUIET without one, the device is quiet:
-                    // the DAW keeps its clock on silence.
+                    // The next block (see next_seq). Past QUIET without one,
+                    // the device is quiet: the DAW keeps its clock on silence.
                     let Some(seq) = self.next_seq(s, last) else {
                         half ^= 1;
                         self.silence(s, half as u32);
@@ -654,26 +653,32 @@ impl Job {
         }
     }
 
-    /// The device's next published block after `last`, watched by a spin
-    /// (yielding the core to any ready thread); `None` after [`QUIET`]
-    /// without one, or when asked to stop.
+    /// The device's next published block after `last`: a short spin on the
+    /// header's seq, then a sleep on the block event (a sleeping thread is
+    /// woken at once and boosted; a spinning one shares its cores' quanta
+    /// with the DAW's other audio threads: 30 ms stalls on the FOH PC);
+    /// `None` after [`QUIET`] without one, or when asked to stop.
     fn next_seq(&self, s: &Shared, last: u64) -> Option<u64> {
         let until = Instant::now() + QUIET;
-        let mut n = 0u32;
+        for _ in 0..SPIN_ROUNDS {
+            let seq = s.header().seq.load(Ordering::Acquire);
+            if seq != last {
+                return Some(seq);
+            }
+            std::hint::spin_loop();
+        }
         loop {
             let seq = s.header().seq.load(Ordering::Acquire);
             if seq != last {
                 return Some(seq);
             }
-            n = n.wrapping_add(1);
-            if n.is_multiple_of(1024) {
-                if self.rt.stop.load(Ordering::Acquire) || Instant::now() >= until {
-                    return None;
-                }
-                std::thread::yield_now();
-            } else {
-                std::hint::spin_loop();
+            let now = Instant::now();
+            if self.rt.stop.load(Ordering::Acquire) || now >= until {
+                return None;
             }
+            // Auto-reset: a signal before this wait is not lost; one for an
+            // older block only wakes the check above.
+            s.wait_block(((until - now).as_millis() as u32).max(1));
         }
     }
 
