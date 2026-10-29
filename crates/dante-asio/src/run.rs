@@ -16,9 +16,6 @@ use tracing::{info, warn};
 
 use crate::bridge::{Bridge, SharedLink};
 
-/// The DAW keeps this much of W for the copy back (µs).
-const COPY_MARGIN_US: u64 = 40;
-
 /// Runs instance `instance` from the device config at `config` on `ip`.
 pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(), String> {
     let cfg = host::read_config(&config).map_err(|e| e.to_string())?;
@@ -44,9 +41,7 @@ pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(),
     );
     let stats = Arc::new(PumpStats::new(timing, cfg.sample_rate));
     media.attach_engine(Arc::clone(&stats));
-    let margin_us = timing.margin * 1_000_000 / u64::from(cfg.sample_rate);
-    let wait = Duration::from_micros(margin_us.saturating_sub(COPY_MARGIN_US).max(1));
-    let bridge = Bridge::new(SharedLink(Arc::clone(&shared)), wait);
+    let bridge = Bridge::new(SharedLink(Arc::clone(&shared)));
     let map = Map {
         rx: (0..cfg.rx.len()).collect(),
         tx: engine_tx,
@@ -78,11 +73,28 @@ pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(),
     );
     let stop_event = StopEvent::create(instance).map_err(|e| format!("the stop event: {e}"))?;
     let start = Instant::now();
+    let mut logged = Instant::now();
     let why = loop {
-        shared
-            .header()
-            .heartbeat_ms
+        let h = shared.header();
+        h.heartbeat_ms
             .store(start.elapsed().as_millis() as u64, Ordering::Release);
+        if logged.elapsed() >= Duration::from_secs(10) {
+            logged = Instant::now();
+            let v = stats.view();
+            info!(
+                seq = h.seq.load(Ordering::Relaxed),
+                ack = h.ack.load(Ordering::Relaxed),
+                late = h.late.load(Ordering::Relaxed),
+                attached = h.host_attached.load(Ordering::Relaxed),
+                blocks = v.blocks,
+                pump_late = v.late,
+                missed = v.missed,
+                overruns = v.overruns,
+                rebootstraps = v.rebootstraps,
+                max_process_us = v.max_process_us,
+                "counts"
+            );
+        }
         if asked.load(Ordering::Acquire) || stop_event.is_set() {
             info!("a stop was asked");
             break None;
@@ -104,12 +116,14 @@ pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(),
     }
 }
 
-/// `Local\dante-asio-<n>-stop`: `dante-asio stop` sets it, the running
-/// instance ends as on Ctrl+C (never killed).
+/// `Global\dante-asio-<n>-stop`: `dante-asio stop` sets it from any
+/// session (an install over ssh too), the running instance ends as on
+/// Ctrl+C (never killed). The instance runs elevated (its logon task), so
+/// it may create a global object.
 pub struct StopEvent(windows_sys::Win32::Foundation::HANDLE);
 
 fn stop_name(instance: u32) -> Vec<u16> {
-    format!("Local\\dante-asio-{instance}-stop")
+    format!("Global\\dante-asio-{instance}-stop")
         .encode_utf16()
         .chain(Some(0))
         .collect()

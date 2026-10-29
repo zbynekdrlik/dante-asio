@@ -28,13 +28,16 @@ pub fn timing(cfg: &DeviceConfig) -> Timing {
 }
 
 /// The DAW's input and output latency, samples: a block reaches the DAW
-/// B + P after its first input sample was stamped; its outputs play W +
-/// the advertised TX latency after the hand-over (receivers play our flows
-/// at that latency).
+/// B + P after its first input sample was stamped; its outputs leave with
+/// the next block (one B, the double buffer), then W and the advertised TX
+/// latency (receivers play our flows at that latency).
 pub fn latencies(cfg: &DeviceConfig) -> (u32, u32) {
     let t = timing(cfg);
     let tx = to_samples(cfg.tx_latency_ns.unwrap_or(cfg.latency_ns), cfg.sample_rate);
-    ((t.block + t.playout) as u32, (t.margin + tx) as u32)
+    (
+        (t.block + t.playout) as u32,
+        (t.block + t.margin + tx) as u32,
+    )
 }
 
 #[cfg(test)]
@@ -52,6 +55,6 @@ mod tests {
         cfg.tx_latency_ns = Some(250_000);
         let t = timing(&cfg);
         assert_eq!((t.block, t.playout, t.margin), (32, 96, 64));
-        assert_eq!(latencies(&cfg), (32 + 96, 64 + 24));
+        assert_eq!(latencies(&cfg), (32 + 96, 32 + 64 + 24));
     }
 }

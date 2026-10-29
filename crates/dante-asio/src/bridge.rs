@@ -1,14 +1,12 @@
-//! The pump's processor: each block's inputs go to the DAW through the
-//! shared memory and its outputs come back within the work margin W.
+//! The pump's processor: double-buffered, as a sound card's ASIO driver.
 //!
-//! Per block: the RX samples into half `seq % 2`'s input buffers (24 bits
-//! left-justified in `i32`, as ASIO's `Int32LSB`), `seq` published and the
-//! block event signalled; then the DAW's `ack` of that `seq` waited for (a
-//! spin, at most the deadline: W less a margin for the copy back); its
-//! output buffers into the block. No DAW attached, or no `ack` in time: the
-//! outputs stay silent and a late one counts in `late`.
-
-use std::time::{Duration, Instant};
+//! Per block `seq`: the RX samples into half `seq % 2`'s input buffers (24
+//! bits left-justified in `i32`, as ASIO's `Int32LSB`), `seq` published and
+//! the block event signalled; the outputs are the DAW's answer to the block
+//! before (half `(seq - 1) % 2`), taken when its `ack` is in. The pump never
+//! waits: the DAW has one block's time to answer, and a missing answer is
+//! silence and a late count. The cost is one block on the way out
+//! (`latencies` counts it).
 
 use audio_io::{Block, Process};
 
@@ -45,14 +43,11 @@ pub fn to_f64(s: i32) -> f64 {
 pub struct Bridge<L: Link> {
     link: L,
     seq: u64,
-    /// How long the DAW may take to return a block.
-    wait: Duration,
 }
 
 impl<L: Link> Bridge<L> {
-    /// `wait`: the DAW's time for a block (W less the copy's margin).
-    pub fn new(link: L, wait: Duration) -> Self {
-        Bridge { link, seq: 0, wait }
+    pub fn new(link: L) -> Self {
+        Bridge { link, seq: 0 }
     }
 }
 
@@ -60,6 +55,17 @@ impl<L: Link> Process for Bridge<L> {
     fn process(&mut self, block: &mut Block<'_>) {
         if !self.link.attached() {
             return;
+        }
+        let prev = self.seq;
+        if prev > 0 {
+            if self.link.ack() >= prev {
+                let half = (prev % 2) as u32;
+                for ch in 0..block.outputs() {
+                    self.link.read_output(half, ch, block.output(ch));
+                }
+            } else {
+                self.link.count_late();
+            }
         }
         self.seq += 1;
         let half = (self.seq % 2) as u32;
@@ -70,17 +76,6 @@ impl<L: Link> Process for Bridge<L> {
             }
         }
         self.link.publish(self.seq);
-        let deadline = Instant::now() + self.wait;
-        while self.link.ack() < self.seq {
-            if Instant::now() >= deadline {
-                self.link.count_late();
-                return;
-            }
-            std::hint::spin_loop();
-        }
-        for ch in 0..block.outputs() {
-            self.link.read_output(half, ch, block.output(ch));
-        }
     }
 }
 

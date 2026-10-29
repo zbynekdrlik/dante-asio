@@ -65,28 +65,35 @@ fn run(bridge: &mut Bridge<Fake>, input: &[f64]) -> Vec<f64> {
 }
 
 #[test]
-fn a_block_goes_to_the_daw_and_its_answer_comes_back() {
-    let mut b = Bridge::new(Fake::new(true, true, 4), Duration::from_millis(5));
+fn a_block_s_answer_comes_back_with_the_next_block() {
+    let mut b = Bridge::new(Fake::new(true, true, 4));
     let out = run(&mut b, &[0.5, -0.25, 0.0, 1.0 / 256.0]);
-    assert_eq!(out, vec![-0.5, 0.25, 0.0, -1.0 / 256.0]);
-    assert_eq!(b.link.late.load(Ordering::Relaxed), 0);
+    assert_eq!(out, vec![0.0; 4], "nothing answered before the first block");
     assert_eq!(b.seq, 1);
     let out = run(&mut b, &[0.125; 4]);
-    assert_eq!(out, vec![-0.125; 4], "the next block in the other half");
-    assert_eq!(b.seq, 2);
+    assert_eq!(out, vec![-0.5, 0.25, 0.0, -1.0 / 256.0], "block 1's answer");
+    let out = run(&mut b, &[0.0; 4]);
+    assert_eq!(
+        out,
+        vec![-0.125; 4],
+        "block 2's answer, from the other half"
+    );
+    assert_eq!(b.link.late.load(Ordering::Relaxed), 0);
+    assert_eq!(b.seq, 3);
 }
 
 #[test]
-fn a_daw_that_does_not_answer_in_time_is_silence_and_late() {
-    let mut b = Bridge::new(Fake::new(true, false, 4), Duration::from_micros(200));
-    let out = run(&mut b, &[0.5, 0.5, 0.5, 0.5]);
-    assert_eq!(out, vec![0.0; 4]);
-    assert_eq!(b.link.late.load(Ordering::Relaxed), 1);
+fn a_daw_that_does_not_answer_is_silence_and_late() {
+    let mut b = Bridge::new(Fake::new(true, false, 4));
+    assert_eq!(run(&mut b, &[0.5; 4]), vec![0.0; 4]);
+    assert_eq!(run(&mut b, &[0.5; 4]), vec![0.0; 4]);
+    assert_eq!(b.link.late.load(Ordering::Relaxed), 1, "block 1 unanswered");
+    assert_eq!(b.seq, 2, "the pump never waits");
 }
 
 #[test]
 fn no_daw_attached_is_silence_and_publishes_nothing() {
-    let mut b = Bridge::new(Fake::new(false, true, 4), Duration::from_millis(5));
+    let mut b = Bridge::new(Fake::new(false, true, 4));
     assert_eq!(run(&mut b, &[0.5; 4]), vec![0.0; 4]);
     assert_eq!(b.seq, 0);
 }
