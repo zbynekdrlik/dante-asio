@@ -2,7 +2,7 @@
 
 //! `dante-asio run --instance <n> --config <device.toml> --ip <address>`:
 //! one instance's Dante device and its shared memory for the driver.
-//! `dante-asio register --instance <n> --dll <path>` and
+//! `dante-asio register --instance <n> --dll <path> [--name <shown to DAWs>]` and
 //! `dante-asio unregister --instance <n>`: the driver's registry entries
 //! (administrator).
 
@@ -11,11 +11,11 @@ use std::process::ExitCode;
 fn usage() -> ExitCode {
     eprintln!(
         "usage: dante-asio run --instance <n> --config <device.toml> --ip <address> [--log <file>]\n       \
-         dante-asio register --instance <n> --dll <path>\n       \
+         dante-asio register --instance <n> --dll <path> [--name <shown to DAWs>]\n       \
          dante-asio stop --instance <n>\n       \
          dante-asio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
          dante-asio jitter --cpus <n,n,..> --seconds <s>\n       \
-         dante-asio unregister --instance <n>"
+         dante-asio unregister --instance <n> [--name <shown to DAWs>]"
     );
     ExitCode::from(2)
 }
@@ -73,9 +73,9 @@ fn main() -> ExitCode {
         return usage();
     };
     let result: Result<(), String> = match cmd.as_str() {
-        "register" => match flag(&args, "--dll")
-            .and_then(|dll| dante_asio::register::entries(instance, &dll))
-        {
+        "register" => match flag(&args, "--dll").and_then(|dll| {
+            dante_asio::register::entries(instance, &dll, flag(&args, "--name").as_deref())
+        }) {
             Some(entries) => apply(&entries),
             None => return usage(),
         },
@@ -90,10 +90,12 @@ fn main() -> ExitCode {
                 .and_then(|m| usize::from_str_radix(m.trim_start_matches("0x"), 16).ok());
             probe(instance, seconds, affinity)
         }
-        "unregister" => match dante_asio::register::keys(instance) {
-            Some(keys) => remove(&keys),
-            None => return usage(),
-        },
+        "unregister" => {
+            match dante_asio::register::keys(instance, flag(&args, "--name").as_deref()) {
+                Some(keys) => remove(&keys),
+                None => return usage(),
+            }
+        }
         "run" => {
             let (Some(config), Some(ip)) = (
                 flag(&args, "--config"),

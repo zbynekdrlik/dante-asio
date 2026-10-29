@@ -21,10 +21,11 @@ fn e(key: &str, name: &str, data: &str) -> Entry {
     }
 }
 
-/// Instance `n`'s values, the DLL at `dll`; `None` outside the instances.
-pub fn entries(n: u32, dll: &str) -> Option<Vec<Entry>> {
+/// Instance `n`'s values, the DLL at `dll`, listed to DAWs as `name` (the
+/// driver's default name when `None`); `None` outside the instances.
+pub fn entries(n: u32, dll: &str, name: Option<&str>) -> Option<Vec<Entry>> {
     let guid = braced(&clsid(n)?);
-    let name = driver_name(n);
+    let name = name.map_or_else(|| driver_name(n), str::to_string);
     let class = format!("SOFTWARE\\Classes\\CLSID\\{guid}");
     let server = format!("{class}\\InprocServer32");
     let asio = format!("SOFTWARE\\ASIO\\{name}");
@@ -37,12 +38,14 @@ pub fn entries(n: u32, dll: &str) -> Option<Vec<Entry>> {
     ])
 }
 
-/// The keys `unregister` removes for instance `n` (whole trees).
-pub fn keys(n: u32) -> Option<[String; 2]> {
+/// The keys `unregister` removes for instance `n` listed as `name` (the
+/// default name when `None`), whole trees.
+pub fn keys(n: u32, name: Option<&str>) -> Option<[String; 2]> {
     let guid = braced(&clsid(n)?);
+    let name = name.map_or_else(|| driver_name(n), str::to_string);
     Some([
         format!("SOFTWARE\\Classes\\CLSID\\{guid}"),
-        format!("SOFTWARE\\ASIO\\{}", driver_name(n)),
+        format!("SOFTWARE\\ASIO\\{name}"),
     ])
 }
 
@@ -135,7 +138,7 @@ mod tests {
         let class = format!("SOFTWARE\\Classes\\CLSID\\{g}");
         let server = format!("{class}\\InprocServer32");
         assert_eq!(
-            entries(2, "C:\\dante-asio\\dante_asio.dll").unwrap(),
+            entries(2, "C:\\dante-asio\\dante_asio.dll", None).unwrap(),
             vec![
                 e(&class, "", "dante-asio 2"),
                 e(&server, "", "C:\\dante-asio\\dante_asio.dll"),
@@ -148,7 +151,14 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(entries(0, "x"), None);
-        assert_eq!(keys(2).unwrap()[1], "SOFTWARE\\ASIO\\dante-asio 2");
+        assert_eq!(entries(0, "x", None), None);
+        assert_eq!(keys(2, None).unwrap()[1], "SOFTWARE\\ASIO\\dante-asio 2");
+        let named = entries(1, "x", Some("master-asio-dante")).unwrap();
+        assert_eq!(named[0].data, "master-asio-dante");
+        assert_eq!(named[3].key, "SOFTWARE\\ASIO\\master-asio-dante");
+        assert_eq!(
+            keys(1, Some("master-asio-dante")).unwrap()[1],
+            "SOFTWARE\\ASIO\\master-asio-dante"
+        );
     }
 }

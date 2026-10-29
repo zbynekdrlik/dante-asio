@@ -5,7 +5,8 @@
 # (other instances use them); its data folder stays (the device's names).
 param(
     [Parameter(Mandatory)][ValidateRange(1, 16)][int]$Instance,
-    [Parameter(Mandatory)][string]$Ip
+    [Parameter(Mandatory)][string]$Ip,
+    [string]$Name = ""
 )
 $ErrorActionPreference = "Stop"
 
@@ -25,7 +26,9 @@ if (Get-ScheduledTask -TaskName $task -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $task -Confirm:$false
 }
 if (Test-Path $exe) {
-    & $exe unregister --instance $Instance
+    $named = @()
+    if ($Name) { $named = @("--name", $Name) }
+    & $exe unregister --instance $Instance @named
     if ($LASTEXITCODE -ne 0) { throw "unregister failed ($LASTEXITCODE)" }
 }
 if (Get-NetIPAddress -IPAddress $Ip -ErrorAction SilentlyContinue) {

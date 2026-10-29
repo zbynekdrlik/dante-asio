@@ -13,7 +13,9 @@ param(
     [Parameter(Mandatory)][string]$InterfaceAlias,
     [Parameter(Mandatory)][string]$Ip,
     [Parameter(Mandatory)][ValidateRange(8, 30)][int]$PrefixLength,
-    [Parameter(Mandatory)][string]$Config
+    [Parameter(Mandatory)][string]$Config,
+    # The name DAWs list the driver under (HKLM\SOFTWARE\ASIO), e.g. master-asio-dante.
+    [string]$Name = ""
 )
 $ErrorActionPreference = "Stop"
 
@@ -51,7 +53,9 @@ if (-not (Get-NetIPAddress -IPAddress $Ip -ErrorAction SilentlyContinue)) {
 }
 
 $exe = Join-Path $bin "dante-asio.exe"
-& $exe register --instance $Instance --dll (Join-Path $bin "dante_asio_driver.dll")
+$named = @()
+if ($Name) { $named = @("--name", $Name) }
+& $exe register --instance $Instance --dll (Join-Path $bin "dante_asio_driver.dll") @named
 if ($LASTEXITCODE -ne 0) { throw "register failed ($LASTEXITCODE)" }
 
 # The logged-on user, machine-qualified (a bare name is refused); the task's
