@@ -24,6 +24,11 @@ pub struct Report {
     pub block: u32,
     pub latency_in: i32,
     pub latency_out: i32,
+    /// The longest gap between two switches and the longest switch, µs.
+    pub max_gap_us: u64,
+    pub max_switch_us: u64,
+    /// Switches more than 1 ms after the one before.
+    pub gaps_over_1ms: u64,
 }
 
 /// The onset of an arrival: a quarter of the impulse.
@@ -43,9 +48,31 @@ struct State {
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 static SWITCHES: AtomicU64 = AtomicU64::new(0);
+static MAX_GAP_US: AtomicU64 = AtomicU64::new(0);
+static MAX_SWITCH_US: AtomicU64 = AtomicU64::new(0);
+static GAPS_OVER_1MS: AtomicU64 = AtomicU64::new(0);
+static LAST_SWITCH: Mutex<Option<Instant>> = Mutex::new(None);
 static RUNNING: AtomicU32 = AtomicU32::new(0);
 
-unsafe extern "C" fn switch(half: i32, _direct: ASIOBool) {
+unsafe extern "C" fn switch(half: i32, direct: ASIOBool) {
+    let entered = Instant::now();
+    {
+        let mut last = LAST_SWITCH.lock().unwrap();
+        if let Some(t) = *last {
+            let gap = entered.duration_since(t).as_micros() as u64;
+            MAX_GAP_US.fetch_max(gap, Ordering::Relaxed);
+            if gap > 1000 {
+                GAPS_OVER_1MS.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        *last = Some(entered);
+    }
+    // SAFETY: the same callback, timed.
+    unsafe { switch_body(half, direct) };
+    MAX_SWITCH_US.fetch_max(entered.elapsed().as_micros() as u64, Ordering::Relaxed);
+}
+
+unsafe fn switch_body(half: i32, _direct: ASIOBool) {
     let mut guard = STATE.lock().unwrap();
     let Some(s) = guard.as_mut() else { return };
     let h = half as usize;
@@ -184,6 +211,9 @@ pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
     }
     let s = STATE.lock().unwrap().take().unwrap();
     report.switches = SWITCHES.load(Ordering::Relaxed);
+    report.max_gap_us = MAX_GAP_US.load(Ordering::Relaxed);
+    report.max_switch_us = MAX_SWITCH_US.load(Ordering::Relaxed);
+    report.gaps_over_1ms = GAPS_OVER_1MS.load(Ordering::Relaxed);
     report.emitted = s.emitted;
     report.round_trips = s.round_trips;
     Ok(report)
