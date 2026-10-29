@@ -5,7 +5,9 @@
 //! `docs/superpowers/plans/2026-10-26-gen3-phase-c-engine-on-linux.md`
 //! Task 2): what `iem-dante-dev` ran in its `main`, so the engine can host
 //! the device in its own process (Task 3) and the standalone binary stays a
-//! thin caller. Linux only, as the binary.
+//! thin caller. Linux and Windows (dante-asio plan Task 2: on Windows no
+//! control socket, a console Ctrl+C for the signals, the NIC's facts from
+//! `GetAdaptersAddresses`).
 //!
 //! - [`prepare`]: the device's setup, nothing served yet: the config and
 //!   its state file (a folder it cannot write is found here), the interface
@@ -45,19 +47,24 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use mdns_sd::{DaemonStatus, IfKind, ServiceDaemon};
-use tokio::net::{UdpSocket, UnixListener};
+use tokio::net::UdpSocket;
+#[cfg(unix)]
+use tokio::net::UnixListener;
 use tokio::runtime::Runtime;
+#[cfg(unix)]
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::Notify;
 use tracing::{info, warn};
 
 use crate::announce::Announcer;
 use crate::clock::{ClockStats, MonoClock, monotonic_ns, poll_dantesync, realtime_ns};
+#[cfg(unix)]
+use crate::ctl;
 use crate::daemon::media::{Clock, Media};
 use crate::daemon::{self, BUILD, IfAddr, Options, ServeError, Sockets, VERSION};
 use crate::device::{Device, DeviceConfig, DeviceState};
 use crate::info::{self, Multicast, NetInfo};
-use crate::{arc, cmc, ctl, flows};
+use crate::{arc, cmc, flows};
 
 /// How long the mDNS daemon gets to send the goodbyes and stop.
 pub const GOODBYE_WAIT: Duration = Duration::from_secs(3);
@@ -144,6 +151,7 @@ pub fn interfaces() -> std::io::Result<Vec<IfAddr>> {
 /// must be read ([`HostError::Run`] when it cannot be, [`HostError::Setup`]
 /// when the interface has none); the speed and the routes may be missing
 /// (a link that is down, no route table): zeros.
+#[cfg(target_os = "linux")]
 pub fn interface_info(ifa: &IfAddr) -> Result<NetInfo, HostError> {
     let sys = format!("/sys/class/net/{}", ifa.name);
     let mac = std::fs::read_to_string(format!("{sys}/address"))
@@ -151,6 +159,86 @@ pub fn interface_info(ifa: &IfAddr) -> Result<NetInfo, HostError> {
     let speed = std::fs::read_to_string(format!("{sys}/speed")).ok();
     let routes = std::fs::read_to_string("/proc/net/route").ok();
     daemon::net_info(ifa, &mac, speed.as_deref(), routes.as_deref()).map_err(setup)
+}
+
+/// On Windows: the MAC and the receive link speed of the adapter holding
+/// the address (`GetAdaptersAddresses`); the gateway is left out (zero).
+#[cfg(windows)]
+pub fn interface_info(ifa: &IfAddr) -> Result<NetInfo, HostError> {
+    let (mac, mbit) = win_nic::of(ifa.ip).map_err(run_failed)?;
+    let speed = mbit.map(|m| m.to_string());
+    daemon::net_info(ifa, &mac, speed.as_deref(), None).map_err(setup)
+}
+
+#[cfg(windows)]
+mod win_nic {
+    use std::net::Ipv4Addr;
+
+    use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST,
+        GetAdaptersAddresses, IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
+
+    /// The MAC (`aa:bb:..`) and the receive speed in Mbit/s of the adapter
+    /// that holds `ip`.
+    pub fn of(ip: Ipv4Addr) -> Result<(String, Option<u64>), String> {
+        let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+        let mut len: u32 = 16 * 1024;
+        let mut buf: Vec<u64> = Vec::new();
+        for _ in 0..4 {
+            buf = vec![0u64; (len as usize).div_ceil(8)];
+            // SAFETY: `buf` is `len` bytes, 8-aligned, writable; the call
+            // fills it with a linked list of adapters inside it.
+            let r = unsafe {
+                GetAdaptersAddresses(
+                    u32::from(AF_INET),
+                    flags,
+                    std::ptr::null(),
+                    buf.as_mut_ptr().cast(),
+                    &mut len,
+                )
+            };
+            if r == NO_ERROR {
+                break;
+            }
+            if r != ERROR_BUFFER_OVERFLOW {
+                return Err(format!("GetAdaptersAddresses failed ({r})"));
+            }
+        }
+        let mut a = buf.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+        while !a.is_null() {
+            // SAFETY: a node of the list the call built inside `buf`.
+            let ad = unsafe { &*a };
+            let mut u = ad.FirstUnicastAddress;
+            while !u.is_null() {
+                // SAFETY: a node of the adapter's unicast list.
+                let ua = unsafe { &*u };
+                let sa = ua.Address.lpSockaddr;
+                // SAFETY: an AF_INET sockaddr (the call was asked for IPv4 only).
+                if !sa.is_null() && unsafe { (*sa).sa_family } == AF_INET {
+                    let sin = unsafe { &*sa.cast::<SOCKADDR_IN>() };
+                    // SAFETY: the IPv4 union member of an AF_INET address.
+                    let raw = unsafe { sin.sin_addr.S_un.S_addr };
+                    if Ipv4Addr::from(u32::from_be(raw)) == ip {
+                        let n = (ad.PhysicalAddressLength as usize).min(8);
+                        let mac = ad.PhysicalAddress[..n]
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<Vec<_>>()
+                            .join(":");
+                        let speed = (ad.ReceiveLinkSpeed != 0 && ad.ReceiveLinkSpeed != u64::MAX)
+                            .then(|| ad.ReceiveLinkSpeed / 1_000_000);
+                        return Ok((mac, speed));
+                    }
+                }
+                u = ua.Next;
+            }
+            a = ad.Next;
+        }
+        Err("no adapter holds the device's address".to_string())
+    }
 }
 
 /// The TX flows' cookies: any start differing between runs.
@@ -162,16 +250,23 @@ fn seed() -> u64 {
 fn bind_sockets(rt: &Runtime, ip: std::net::Ipv4Addr) -> Result<Sockets, HostError> {
     rt.block_on(async {
         let bind = |port: u16, what: &'static str| async move {
-            UdpSocket::bind((ip, port))
+            let sock = UdpSocket::bind((ip, port))
                 .await
-                .map_err(|e| run_failed(format!("{what} on UDP {port}: {e}")))
+                .map_err(|e| run_failed(format!("{what} on UDP {port}: {e}")))?;
+            crate::winsock::no_connreset(&sock)
+                .map_err(|e| run_failed(format!("{what} on UDP {port}: {e}")))?;
+            Ok::<_, HostError>(sock)
         };
+        let info = bind(info::REQUEST_PORT, "the info server").await?;
+        // Bound to the address, as inferno's; the multicasts' interface is
+        // named too (Windows may not route them by the bound address).
+        socket2::SockRef::from(&info)
+            .set_multicast_if_v4(&ip)
+            .map_err(|e| run_failed(format!("the info server's multicast interface: {e}")))?;
         Ok(Sockets {
             arc: bind(arc::PORT, "ARC").await?,
             cmc: bind(cmc::PORT, "CMC").await?,
-            // Bound to the address, as inferno's: the info multicasts
-            // leave by its interface.
-            info: bind(info::REQUEST_PORT, "the info server").await?,
+            info,
             flows: bind(flows::control::PORT, "flow control").await?,
         })
     })
@@ -186,6 +281,7 @@ pub struct Prepared {
     /// The media clock the poller keeps (the media side reads it).
     mono: Arc<MonoClock>,
     media: Arc<Media>,
+    #[cfg(unix)]
     listener: UnixListener,
 }
 
@@ -240,6 +336,7 @@ pub fn prepare(opts: &Options, engine_tx: &[usize]) -> Result<Prepared, HostErro
     };
     let media = Media::new(&device, net.ip, clock, seed(), engine_tx)
         .map_err(|e| run_failed(format!("the flow sockets: {e}")))?;
+    #[cfg(unix)]
     let listener = {
         let _in_rt = rt.enter();
         ctl::bind_control(&opts.control).map_err(|e| {
@@ -256,6 +353,7 @@ pub fn prepare(opts: &Options, engine_tx: &[usize]) -> Result<Prepared, HostErro
         sockets,
         mono,
         media: Arc::new(media),
+        #[cfg(unix)]
         listener,
     })
 }
@@ -308,6 +406,7 @@ impl Prepared {
             sockets,
             mono,
             media,
+            #[cfg(unix)]
             listener,
         } = self;
         let watch = {
@@ -331,6 +430,7 @@ impl Prepared {
             sockets,
             mono,
             media,
+            #[cfg(unix)]
             listener,
         };
         let kept = mdns.clone();
@@ -355,10 +455,12 @@ struct Served {
     sockets: Sockets,
     mono: Arc<MonoClock>,
     media: Arc<Media>,
+    #[cfg(unix)]
     listener: UnixListener,
 }
 
 /// The signals as registered (in the device's runtime).
+#[cfg(unix)]
 enum Watch {
     Stop {
         term: Signal,
@@ -371,6 +473,7 @@ enum Watch {
     },
 }
 
+#[cfg(unix)]
 impl Watch {
     /// Registers SIGTERM and SIGINT (inside the runtime).
     fn new(signals: Signals) -> Result<Watch, HostError> {
@@ -404,6 +507,7 @@ impl Watch {
 }
 
 /// Sets `flag` at every SIGTERM or SIGINT (the host stops the device).
+#[cfg(unix)]
 async fn report(mut term: Signal, mut int: Signal, flag: Arc<AtomicBool>) {
     loop {
         let which = tokio::select! {
@@ -416,6 +520,47 @@ async fn report(mut term: Signal, mut int: Signal, flag: Arc<AtomicBool>) {
             "a stop was asked: the host stops the device"
         );
         flag.store(true, Ordering::Release);
+    }
+}
+
+/// On Windows: a console Ctrl+C (or the console's close) in place of the
+/// signals.
+#[cfg(windows)]
+enum Watch {
+    Stop,
+    Report(Arc<AtomicBool>),
+}
+
+#[cfg(windows)]
+impl Watch {
+    fn new(signals: Signals) -> Result<Watch, HostError> {
+        Ok(match signals {
+            Signals::Stop => Watch::Stop,
+            Signals::Report(flag) => Watch::Report(flag),
+        })
+    }
+
+    /// The future that ends serving: Ctrl+C (for [`Signals::Stop`]) or the
+    /// host's stop; for [`Signals::Report`] Ctrl+C only sets the flag.
+    async fn stop(self, control: &Control) {
+        match self {
+            Watch::Stop => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => info!("Ctrl+C: stopping"),
+                    () = control.stop.notified() => info!("the device's stop was asked"),
+                }
+            }
+            Watch::Report(flag) => {
+                tokio::spawn(async move {
+                    while tokio::signal::ctrl_c().await.is_ok() {
+                        info!("Ctrl+C: the host stops the device");
+                        flag.store(true, Ordering::Release);
+                    }
+                });
+                control.stop.notified().await;
+                info!("the device's stop was asked");
+            }
+        }
     }
 }
 
@@ -457,7 +602,11 @@ async fn serve_device(
         heartbeat_port = info::HEARTBEAT_PORT,
         "listening on the interface's address"
     );
+    #[cfg(unix)]
     let ctl_server = ctl::serve_control(s.listener, Arc::clone(&s.media));
+    // No control socket on Windows (dante-asio's tray reads the shared memory).
+    #[cfg(windows)]
+    let ctl_server = std::future::pending::<std::io::Result<()>>();
     daemon::serve(
         s.sockets,
         Arc::new(Mutex::new(s.device)),

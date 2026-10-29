@@ -93,10 +93,11 @@ pub mod daemon;
 pub mod device;
 pub mod flows;
 pub mod health;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub mod host;
 pub mod info;
 pub mod media;
 pub mod stream;
 pub mod subscribe;
+pub mod winsock;
 pub mod wire;

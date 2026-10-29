@@ -374,8 +374,8 @@ fn the_manual_clock_moves_only_when_asked() {
     assert_eq!(c.now_ns(), Some(2_510));
 }
 
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(any(target_os = "linux", windows))]
+mod os {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicI32, Ordering};
     use std::sync::mpsc;
@@ -387,6 +387,7 @@ mod linux {
     /// One hour: a k whose sign error would sleep for hours.
     const HOUR: i64 = 3_600_000_000_000;
 
+    #[cfg(target_os = "linux")]
     /// The kernel's clock `id`, read here independently of the module.
     fn kernel(id: libc::clockid_t) -> i64 {
         let mut ts = libc::timespec {
@@ -398,6 +399,7 @@ mod linux {
         ts.tv_sec * 1_000_000_000 + ts.tv_nsec
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn the_box_clocks_read_the_kernel_s() {
         for _ in 0..1_000 {
@@ -532,7 +534,7 @@ mod linux {
         let clock = Arc::new(MonoClock::new());
         let freq = Arc::new(AtomicI32::new(0));
         let stats = Arc::new(ClockStats::default());
-        let polling = tokio::spawn(crate::clock::linux::poll(
+        let polling = tokio::spawn(crate::clock::os::poll(
             addr,
             clock.clone(),
             freq.clone(),
@@ -677,7 +679,7 @@ mod linux {
         let clock = Arc::new(MonoClock::new());
         let freq = Arc::new(AtomicI32::new(7));
         let stats = Arc::new(ClockStats::default());
-        let polling = tokio::spawn(crate::clock::linux::poll(
+        let polling = tokio::spawn(crate::clock::os::poll(
             addr,
             clock.clone(),
             freq.clone(),

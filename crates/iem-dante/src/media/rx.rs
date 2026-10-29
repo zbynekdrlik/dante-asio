@@ -254,6 +254,7 @@ impl RxShared {
             .map(|_| {
                 let s = UdpSocket::bind(SocketAddrV4::new(ip, 0))?;
                 s.set_nonblocking(true)?;
+                crate::winsock::no_connreset(&s)?;
                 recv_buffer = set_recv_buffer(&s, RECV_BUFFER_BYTES);
                 Ok(s)
             })

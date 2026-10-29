@@ -8,7 +8,7 @@
 //! their threads step them (the threads' loops are glue): every packet sent
 //! is received before time moves on, and every wait is bounded.
 
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", windows))]
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;

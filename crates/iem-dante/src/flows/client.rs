@@ -138,6 +138,7 @@ impl Client {
     ) -> Result<Vec<u8>, ClientError> {
         let deadline = Instant::now() + wait;
         let sock = UdpSocket::bind(SocketAddr::V4(SocketAddrV4::new(self.ip, 0))).await?;
+        crate::winsock::no_connreset(&sock)?;
         sock.connect(SocketAddr::V4(to)).await?;
         sock.send(datagram).await?;
         let mut buf = [0u8; RECV_BUFFER];

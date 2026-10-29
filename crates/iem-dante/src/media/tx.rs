@@ -547,6 +547,7 @@ impl TxShared {
             .map(|_| {
                 let s = UdpSocket::bind(SocketAddrV4::new(ip, 0))?;
                 s.set_nonblocking(true)?;
+                crate::winsock::no_connreset(&s)?;
                 Ok(s)
             })
             .collect::<io::Result<Box<[UdpSocket]>>>()?;
@@ -1017,7 +1018,25 @@ pub(crate) fn ask_realtime(priority: i32) -> bool {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// On Windows: the MMCSS "Pro Audio" task at its critical priority (the
+/// ASIO SDK's rule for a driver's audio threads), whatever `priority`; the
+/// task stays the thread's for its life. `false` when MMCSS refuses it.
+#[cfg(windows)]
+pub(crate) fn ask_realtime(_priority: i32) -> bool {
+    use windows_sys::Win32::System::Threading::{
+        AVRT_PRIORITY_CRITICAL, AvSetMmThreadCharacteristicsW, AvSetMmThreadPriority,
+    };
+    let task: Vec<u16> = "Pro Audio".encode_utf16().chain(Some(0)).collect();
+    let mut index = 0u32;
+    // SAFETY: `task` is a NUL-terminated UTF-16 string and `index` a
+    // writable u32; the returned handle is the thread's MMCSS registration,
+    // kept for the thread's life (never reverted).
+    let h = unsafe { AvSetMmThreadCharacteristicsW(task.as_ptr(), &mut index) };
+    // SAFETY: `h` is the registration just made.
+    !h.is_null() && unsafe { AvSetMmThreadPriority(h, AVRT_PRIORITY_CRITICAL) } != 0
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub(crate) fn ask_realtime(_priority: i32) -> bool {
     false
 }
@@ -1053,7 +1072,19 @@ pub(crate) fn pin_to_cpu(cpu: usize) -> bool {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+/// On Windows: the thread's affinity to `cpu` alone (the first processor
+/// group, 64 CPUs).
+#[cfg(windows)]
+pub(crate) fn pin_to_cpu(cpu: usize) -> bool {
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadAffinityMask};
+    if cpu >= 64 {
+        return false;
+    }
+    // SAFETY: the pseudo handle of the calling thread and a one-CPU mask.
+    unsafe { SetThreadAffinityMask(GetCurrentThread(), 1usize << cpu) != 0 }
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub(crate) fn pin_to_cpu(_cpu: usize) -> bool {
     false
 }

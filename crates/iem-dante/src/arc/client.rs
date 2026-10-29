@@ -330,6 +330,7 @@ impl<'a> Udp<'a> {
         stop: &'a AtomicBool,
     ) -> io::Result<Self> {
         let sock = UdpSocket::bind(SocketAddrV4::new(ip, 0))?;
+        crate::winsock::no_connreset(&sock)?;
         sock.connect(SocketAddr::V4(to))?;
         Ok(Udp {
             sock,

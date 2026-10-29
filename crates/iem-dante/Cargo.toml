@@ -47,6 +47,20 @@ tracing = "0.1"
 # iem-dante-dev's log on stderr (the journal), RUST_LOG as the engine reads it.
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[target.'cfg(windows)'.dependencies]
+# dante-asio (plan Task 2): the precise system time and a high-resolution
+# waitable timer (the media clock), MMCSS and thread affinity (the media
+# threads), the NIC's MAC and speed (the network info), SIO_UDP_CONNRESET.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
+  "Win32_System_IO",
+  "Win32_System_SystemInformation",
+  "Win32_System_Threading",
+] }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # The media clock (phase B): clock_gettime(CLOCK_MONOTONIC / CLOCK_REALTIME)
 # and clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME). MIT OR Apache-2.0,

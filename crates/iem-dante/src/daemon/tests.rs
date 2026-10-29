@@ -832,292 +832,289 @@ impl Registry for Log {
     }
 }
 
-/// The daemon on loopback with its control socket (a unix socket, so these
-/// tests run where the control socket does).
-#[cfg(unix)]
-mod on_loopback {
-    use super::*;
+/// The test device, its state file in `dir`.
+fn device_in(dir: &Path) -> Arc<Mutex<Device>> {
+    let cfg = DeviceConfig {
+        state_file: dir.join("state.toml"),
+        ..DeviceConfig::from_toml(TEST_DEVICE).expect("config/test-dante-device.toml")
+    };
+    Arc::new(Mutex::new(Device::load(cfg).unwrap()))
+}
 
-    /// The test device, its state file in `dir`.
-    fn device_in(dir: &Path) -> Arc<Mutex<Device>> {
-        let cfg = DeviceConfig {
-            state_file: dir.join("state.toml"),
-            ..DeviceConfig::from_toml(TEST_DEVICE).expect("config/test-dante-device.toml")
-        };
-        Arc::new(Mutex::new(Device::load(cfg).unwrap()))
+/// The interface the tests serve on.
+fn net() -> NetInfo {
+    NetInfo {
+        mac: MAC,
+        ip: IP,
+        netmask: MASK,
+        gateway: GATEWAY,
+        link_speed: 1000,
     }
+}
 
-    /// The interface the tests serve on.
-    fn net() -> NetInfo {
-        NetInfo {
-            mac: MAC,
-            ip: IP,
-            netmask: MASK,
-            gateway: GATEWAY,
-            link_speed: 1000,
-        }
+fn v4(addr: SocketAddr) -> SocketAddrV4 {
+    match addr {
+        SocketAddr::V4(v4) => v4,
+        SocketAddr::V6(_) => panic!("a loopback IPv4 socket"),
     }
+}
 
-    fn v4(addr: SocketAddr) -> SocketAddrV4 {
-        match addr {
-            SocketAddr::V4(v4) => v4,
-            SocketAddr::V6(_) => panic!("a loopback IPv4 socket"),
-        }
+/// The daemon's sockets on loopback and their addresses, and receivers
+/// standing in for the info and heartbeat groups (a heartbeat period no
+/// test waits for: only the first, immediate, beat).
+struct Loopback {
+    sockets: Sockets,
+    arc: SocketAddr,
+    cmc: SocketAddr,
+    info: SocketAddr,
+    flows: SocketAddr,
+    info_rx: UdpSocket,
+    beat_rx: UdpSocket,
+    multicast: Multicast,
+}
+
+async fn loopback() -> Loopback {
+    let bind = || UdpSocket::bind("127.0.0.1:0");
+    let sockets = Sockets {
+        arc: bind().await.unwrap(),
+        cmc: bind().await.unwrap(),
+        info: bind().await.unwrap(),
+        flows: bind().await.unwrap(),
+    };
+    let (info_rx, beat_rx) = (bind().await.unwrap(), bind().await.unwrap());
+    let multicast = Multicast {
+        info: v4(info_rx.local_addr().unwrap()),
+        heartbeat: v4(beat_rx.local_addr().unwrap()),
+        every: Duration::from_secs(3600),
+    };
+    Loopback {
+        arc: sockets.arc.local_addr().unwrap(),
+        cmc: sockets.cmc.local_addr().unwrap(),
+        info: sockets.info.local_addr().unwrap(),
+        flows: sockets.flows.local_addr().unwrap(),
+        sockets,
+        info_rx,
+        beat_rx,
+        multicast,
     }
+}
 
-    /// The daemon's sockets on loopback and their addresses, and receivers
-    /// standing in for the info and heartbeat groups (a heartbeat period no
-    /// test waits for: only the first, immediate, beat).
-    struct Loopback {
-        sockets: Sockets,
-        arc: SocketAddr,
-        cmc: SocketAddr,
-        info: SocketAddr,
-        flows: SocketAddr,
-        info_rx: UdpSocket,
-        beat_rx: UdpSocket,
-        multicast: Multicast,
-    }
+/// The device's audio side on loopback, its clock never ready.
+fn media_of(shared: &Arc<Mutex<Device>>) -> Arc<Media> {
+    media_on(&shared.lock().unwrap(), Arc::new(Unready))
+}
 
-    async fn loopback() -> Loopback {
-        let bind = || UdpSocket::bind("127.0.0.1:0");
-        let sockets = Sockets {
-            arc: bind().await.unwrap(),
-            cmc: bind().await.unwrap(),
-            info: bind().await.unwrap(),
-            flows: bind().await.unwrap(),
-        };
-        let (info_rx, beat_rx) = (bind().await.unwrap(), bind().await.unwrap());
-        let multicast = Multicast {
-            info: v4(info_rx.local_addr().unwrap()),
-            heartbeat: v4(beat_rx.local_addr().unwrap()),
-            every: Duration::from_secs(3600),
-        };
-        Loopback {
-            arc: sockets.arc.local_addr().unwrap(),
-            cmc: sockets.cmc.local_addr().unwrap(),
-            info: sockets.info.local_addr().unwrap(),
-            flows: sockets.flows.local_addr().unwrap(),
-            sockets,
-            info_rx,
-            beat_rx,
-            multicast,
-        }
-    }
-
-    /// The device's audio side on loopback, its clock never ready.
-    fn media_of(shared: &Arc<Mutex<Device>>) -> Arc<Media> {
-        media_on(&shared.lock().unwrap(), Arc::new(Unready))
-    }
-
-    async fn recv(sock: &UdpSocket) -> Vec<u8> {
-        let mut buf = [0u8; 2048];
-        let (n, _) = tokio::time::timeout(BOUND, sock.recv_from(&mut buf))
-            .await
-            .expect("a packet within the bound")
-            .unwrap();
-        buf[..n].to_vec()
-    }
-
-    /// An info request as Dante Controller sends it (#72, 2026-10-26), with a
-    /// synthetic MAC, asking `what` (0x61 board info, 0x13 network info).
-    fn info_request(what: u8) -> Vec<u8> {
-        let mut req = vec![0xff, 0xff, 0x00, 0x20, 0x00, 0xe4, 0x00, 0x00];
-        req.extend_from_slice(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00]);
-        req.extend_from_slice(b"Audinate");
-        req.extend_from_slice(&[0x07, 0x3e, 0x00, what, 0x00, 0x00, 0x00, 0x00]);
-        req
-    }
-
-    /// An info packet's sequence and opcode.
-    fn seq_op(packet: &[u8]) -> (u16, &[u8]) {
-        (u16::from_be_bytes([packet[4], packet[5]]), &packet[24..32])
-    }
-
-    async fn ask(peer: &UdpSocket, to: std::net::SocketAddr, packet: &[u8]) -> Vec<u8> {
-        peer.send_to(packet, to).await.unwrap();
-        let mut buf = [0u8; 2048];
-        let (n, _) = tokio::time::timeout(BOUND, peer.recv_from(&mut buf))
-            .await
-            .expect("an answer within the bound")
-            .unwrap();
-        buf[..n].to_vec()
-    }
-
-    /// netaudio's TX rename of `channel` to `name`.
-    fn tx_rename(channel: u8, name: &[u8]) -> Vec<u8> {
-        let mut body = vec![0x02, 0x01, 0, 0, 0, channel, 0x00, 0x18, 0, 0, 0, 0, 0, 0];
-        body.extend_from_slice(name);
-        body.push(0);
-        request(0x27ff, 9, op::TX_RENAME, 0, &body)
-    }
-
-    fn chan(name: &str) -> String {
-        format!("+{name}@test-device.{CHAN_SERVICE} -> test-device.local.")
-    }
-
-    #[tokio::test]
-    async fn the_daemon_announces_answers_and_announces_a_rename_again_until_stopped() {
-        let dir = tempfile::tempdir().unwrap();
-        let shared = device_in(dir.path());
-        let log = Log::new(usize::MAX);
-        let mut announcer = Announcer::new(log.clone());
-        let Loopback {
-            sockets,
-            arc: arc_at,
-            cmc: cmc_at,
-            info: info_at,
-            flows: flows_at,
-            info_rx,
-            beat_rx,
-            multicast,
-        } = loopback().await;
-        let media = media_of(&shared);
-        let control_path = dir.path().join("control.sock");
-        let control = crate::ctl::serve_control(
-            crate::ctl::bind_control(&control_path).unwrap(),
-            Arc::clone(&media),
-        );
-        let (stop_tx, stop_rx) = oneshot::channel::<()>();
-        let stop = async move {
-            stop_rx.await.ok();
-        };
-        let watch = log.clone();
-        let peer = async move {
-            let reply = ask(
-                &peer_socket().await,
-                cmc_at,
-                &request(0x27ff, 1, cmc::ADVERTISE, 0, &[]),
-            )
-            .await;
-            let (h, body) = Header::parse(&reply).unwrap();
-            assert_eq!((h.seq, h.op2), (1, STATUS_OK));
-            assert_eq!(
-                body[14..18],
-                IP.octets(),
-                "CMC advertises the served address"
-            );
-            // The info server: the board and product info at start and the
-            // first heartbeat, then the board and network info asked for, to
-            // the info group, from the device's id.
-            let board = [0x07, 0x2a, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00];
-            let network = [0x07, 0x2a, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00];
-            let product = [0x07, 0x2a, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00];
-            assert_eq!(seq_op(&recv(&info_rx).await), (1, &board[..]));
-            assert_eq!(seq_op(&recv(&info_rx).await), (2, &product[..]));
-            let beat = recv(&beat_rx).await;
-            assert_eq!((beat.len(), seq_op(&beat).0), (32, 3));
-            let asker = peer_socket().await;
-            asker.send_to(&info_request(0x61), info_at).await.unwrap();
-            let reply = recv(&info_rx).await;
-            assert_eq!(seq_op(&reply), (4, &board[..]));
-            assert_eq!(reply[8..16], [0, 0, 10, 0, 0, 10, 0, 0], "the device id");
-            asker.send_to(&info_request(0x13), info_at).await.unwrap();
-            let reply = recv(&info_rx).await;
-            assert_eq!(seq_op(&reply), (5, &network[..]));
-            assert_eq!(reply[32 + 10..32 + 16], MAC, "the interface's MAC");
-            assert_eq!(reply[32 + 16..32 + 20], IP.octets());
-            assert_eq!(reply[32 + 24..32 + 28], GATEWAY.octets());
-            let reply = ask(&peer_socket().await, arc_at, &tx_rename(3, b"Mix 3")).await;
-            let (h, _) = Header::parse(&reply).unwrap();
-            assert_eq!((h.seq, h.op2), (9, STATUS_OK));
-            // The rename's record follows within the bound.
-            let deadline = tokio::time::Instant::now() + BOUND;
-            while !watch.calls().contains(&chan("Mix 3")) {
-                assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "no new announcement"
-                );
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-            // Flow control: a stop of a flow we never granted is 0x0103.
-            let stop_req = crate::flows::control::build_stop(4, &[0, 0, 0, 9, 0, 1]);
-            let reply = ask(&peer_socket().await, flows_at, &stop_req).await;
-            assert_eq!(Header::parse(&reply).unwrap().0.op2, 0x0103);
-            // The control socket: a source set, and the status counting every
-            // request above by port and opcode (one peer: loopback).
-            assert_eq!(control_ask(&control_path, "source 1 counter").await, "ok\n");
-            let status = control_ask(&control_path, "status").await;
-            for counted in [
-                "{\"port\":4440,\"peer\":1,\"op\":8211,\"n\":1}",
-                "{\"port\":4455,\"peer\":1,\"op\":257,\"n\":1}",
-                "{\"port\":8700,\"peer\":1,\"op\":19,\"n\":1}",
-                "{\"port\":8700,\"peer\":1,\"op\":97,\"n\":1}",
-                "{\"port\":8800,\"peer\":1,\"op\":4097,\"n\":1}",
-                "\"sources\":[{\"tx\":1,\"source\":\"counter\"}]",
-            ] {
-                assert!(status.contains(counted), "{counted} in {status}");
-            }
-            stop_tx.send(()).unwrap();
-        };
-        let (served, ()) = tokio::time::timeout(BOUND, async {
-            tokio::join!(
-                serve(
-                    sockets,
-                    Arc::clone(&shared),
-                    &mut announcer,
-                    net(),
-                    multicast,
-                    Arc::clone(&media),
-                    control,
-                    stop
-                ),
-                peer
-            )
-        })
+async fn recv(sock: &UdpSocket) -> Vec<u8> {
+    let mut buf = [0u8; 2048];
+    let (n, _) = tokio::time::timeout(BOUND, sock.recv_from(&mut buf))
         .await
-        .expect("the daemon ends within the bound once stopped");
-        served.unwrap();
-        // The stop ended the media threads.
-        assert!(media.tx.stopping() && media.rx.stopping());
-        let calls = log.calls();
-        assert_eq!(calls.len(), 2 + 16 + 1, "{calls:#?}");
-        assert_eq!(
-            calls[0],
-            "+test-device._netaudio-arc._udp.local. -> test-device.local."
-        );
-        assert_eq!(
-            calls[1],
-            "+test-device._netaudio-cmc._udp.local. -> test-device.local."
-        );
-        assert_eq!(calls[2], chan("TX 1"));
-        assert_eq!(calls[17], chan("TX 16"));
-        assert_eq!(
-            calls[18],
-            chan("Mix 3"),
-            "only the new record is sent again"
-        );
-        let saved = std::fs::read_to_string(dir.path().join("state.toml")).unwrap();
-        assert!(saved.contains("Mix 3"), "{saved}");
-        assert_eq!(shared.lock().unwrap().state.tx[2], "Mix 3");
-    }
+        .expect("a packet within the bound")
+        .unwrap();
+    buf[..n].to_vec()
+}
 
-    async fn peer_socket() -> UdpSocket {
-        UdpSocket::bind("127.0.0.1:0").await.unwrap()
-    }
+#[cfg(unix)]
+/// An info request as Dante Controller sends it (#72, 2026-10-26), with a
+/// synthetic MAC, asking `what` (0x61 board info, 0x13 network info).
+fn info_request(what: u8) -> Vec<u8> {
+    let mut req = vec![0xff, 0xff, 0x00, 0x20, 0x00, 0xe4, 0x00, 0x00];
+    req.extend_from_slice(&[0x02, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00]);
+    req.extend_from_slice(b"Audinate");
+    req.extend_from_slice(&[0x07, 0x3e, 0x00, what, 0x00, 0x00, 0x00, 0x00]);
+    req
+}
 
-    /// One request line to the control socket at `path`; its answer, bounded.
-    async fn control_ask(path: &Path, line: &str) -> String {
-        tokio::time::timeout(BOUND, async {
-            let s = tokio::net::UnixStream::connect(path).await.unwrap();
-            s.writable().await.unwrap();
-            s.try_write(format!("{line}\n").as_bytes()).unwrap();
-            let mut out = Vec::new();
-            let mut buf = [0u8; 4096];
-            loop {
-                s.readable().await.unwrap();
-                match s.try_read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => out.extend_from_slice(&buf[..n]),
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(e) => panic!("{e}"),
-                }
-            }
-            String::from_utf8(out).unwrap()
-        })
+#[cfg(unix)]
+/// An info packet's sequence and opcode.
+fn seq_op(packet: &[u8]) -> (u16, &[u8]) {
+    (u16::from_be_bytes([packet[4], packet[5]]), &packet[24..32])
+}
+
+async fn ask(peer: &UdpSocket, to: std::net::SocketAddr, packet: &[u8]) -> Vec<u8> {
+    peer.send_to(packet, to).await.unwrap();
+    let mut buf = [0u8; 2048];
+    let (n, _) = tokio::time::timeout(BOUND, peer.recv_from(&mut buf))
         .await
         .expect("an answer within the bound")
-    }
+        .unwrap();
+    buf[..n].to_vec()
+}
+
+/// netaudio's TX rename of `channel` to `name`.
+fn tx_rename(channel: u8, name: &[u8]) -> Vec<u8> {
+    let mut body = vec![0x02, 0x01, 0, 0, 0, channel, 0x00, 0x18, 0, 0, 0, 0, 0, 0];
+    body.extend_from_slice(name);
+    body.push(0);
+    request(0x27ff, 9, op::TX_RENAME, 0, &body)
+}
+
+fn chan(name: &str) -> String {
+    format!("+{name}@test-device.{CHAN_SERVICE} -> test-device.local.")
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_daemon_announces_answers_and_announces_a_rename_again_until_stopped() {
+    let dir = tempfile::tempdir().unwrap();
+    let shared = device_in(dir.path());
+    let log = Log::new(usize::MAX);
+    let mut announcer = Announcer::new(log.clone());
+    let Loopback {
+        sockets,
+        arc: arc_at,
+        cmc: cmc_at,
+        info: info_at,
+        flows: flows_at,
+        info_rx,
+        beat_rx,
+        multicast,
+    } = loopback().await;
+    let media = media_of(&shared);
+    let control_path = dir.path().join("control.sock");
+    let control = crate::ctl::serve_control(
+        crate::ctl::bind_control(&control_path).unwrap(),
+        Arc::clone(&media),
+    );
+    let (stop_tx, stop_rx) = oneshot::channel::<()>();
+    let stop = async move {
+        stop_rx.await.ok();
+    };
+    let watch = log.clone();
+    let peer = async move {
+        let reply = ask(
+            &peer_socket().await,
+            cmc_at,
+            &request(0x27ff, 1, cmc::ADVERTISE, 0, &[]),
+        )
+        .await;
+        let (h, body) = Header::parse(&reply).unwrap();
+        assert_eq!((h.seq, h.op2), (1, STATUS_OK));
+        assert_eq!(
+            body[14..18],
+            IP.octets(),
+            "CMC advertises the served address"
+        );
+        // The info server: the board and product info at start and the
+        // first heartbeat, then the board and network info asked for, to
+        // the info group, from the device's id.
+        let board = [0x07, 0x2a, 0x00, 0x60, 0x00, 0x00, 0x00, 0x00];
+        let network = [0x07, 0x2a, 0x00, 0x11, 0x00, 0x00, 0x00, 0x00];
+        let product = [0x07, 0x2a, 0x00, 0xc0, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(seq_op(&recv(&info_rx).await), (1, &board[..]));
+        assert_eq!(seq_op(&recv(&info_rx).await), (2, &product[..]));
+        let beat = recv(&beat_rx).await;
+        assert_eq!((beat.len(), seq_op(&beat).0), (32, 3));
+        let asker = peer_socket().await;
+        asker.send_to(&info_request(0x61), info_at).await.unwrap();
+        let reply = recv(&info_rx).await;
+        assert_eq!(seq_op(&reply), (4, &board[..]));
+        assert_eq!(reply[8..16], [0, 0, 10, 0, 0, 10, 0, 0], "the device id");
+        asker.send_to(&info_request(0x13), info_at).await.unwrap();
+        let reply = recv(&info_rx).await;
+        assert_eq!(seq_op(&reply), (5, &network[..]));
+        assert_eq!(reply[32 + 10..32 + 16], MAC, "the interface's MAC");
+        assert_eq!(reply[32 + 16..32 + 20], IP.octets());
+        assert_eq!(reply[32 + 24..32 + 28], GATEWAY.octets());
+        let reply = ask(&peer_socket().await, arc_at, &tx_rename(3, b"Mix 3")).await;
+        let (h, _) = Header::parse(&reply).unwrap();
+        assert_eq!((h.seq, h.op2), (9, STATUS_OK));
+        // The rename's record follows within the bound.
+        let deadline = tokio::time::Instant::now() + BOUND;
+        while !watch.calls().contains(&chan("Mix 3")) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "no new announcement"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // Flow control: a stop of a flow we never granted is 0x0103.
+        let stop_req = crate::flows::control::build_stop(4, &[0, 0, 0, 9, 0, 1]);
+        let reply = ask(&peer_socket().await, flows_at, &stop_req).await;
+        assert_eq!(Header::parse(&reply).unwrap().0.op2, 0x0103);
+        // The control socket: a source set, and the status counting every
+        // request above by port and opcode (one peer: loopback).
+        assert_eq!(control_ask(&control_path, "source 1 counter").await, "ok\n");
+        let status = control_ask(&control_path, "status").await;
+        for counted in [
+            "{\"port\":4440,\"peer\":1,\"op\":8211,\"n\":1}",
+            "{\"port\":4455,\"peer\":1,\"op\":257,\"n\":1}",
+            "{\"port\":8700,\"peer\":1,\"op\":19,\"n\":1}",
+            "{\"port\":8700,\"peer\":1,\"op\":97,\"n\":1}",
+            "{\"port\":8800,\"peer\":1,\"op\":4097,\"n\":1}",
+            "\"sources\":[{\"tx\":1,\"source\":\"counter\"}]",
+        ] {
+            assert!(status.contains(counted), "{counted} in {status}");
+        }
+        stop_tx.send(()).unwrap();
+    };
+    let (served, ()) = tokio::time::timeout(BOUND, async {
+        tokio::join!(
+            serve(
+                sockets,
+                Arc::clone(&shared),
+                &mut announcer,
+                net(),
+                multicast,
+                Arc::clone(&media),
+                control,
+                stop
+            ),
+            peer
+        )
+    })
+    .await
+    .expect("the daemon ends within the bound once stopped");
+    served.unwrap();
+    // The stop ended the media threads.
+    assert!(media.tx.stopping() && media.rx.stopping());
+    let calls = log.calls();
+    assert_eq!(calls.len(), 2 + 16 + 1, "{calls:#?}");
+    assert_eq!(
+        calls[0],
+        "+test-device._netaudio-arc._udp.local. -> test-device.local."
+    );
+    assert_eq!(
+        calls[1],
+        "+test-device._netaudio-cmc._udp.local. -> test-device.local."
+    );
+    assert_eq!(calls[2], chan("TX 1"));
+    assert_eq!(calls[17], chan("TX 16"));
+    assert_eq!(
+        calls[18],
+        chan("Mix 3"),
+        "only the new record is sent again"
+    );
+    let saved = std::fs::read_to_string(dir.path().join("state.toml")).unwrap();
+    assert!(saved.contains("Mix 3"), "{saved}");
+    assert_eq!(shared.lock().unwrap().state.tx[2], "Mix 3");
+}
+
+async fn peer_socket() -> UdpSocket {
+    UdpSocket::bind("127.0.0.1:0").await.unwrap()
+}
+
+#[cfg(unix)]
+/// One request line to the control socket at `path`; its answer, bounded.
+async fn control_ask(path: &Path, line: &str) -> String {
+    tokio::time::timeout(BOUND, async {
+        let s = tokio::net::UnixStream::connect(path).await.unwrap();
+        s.writable().await.unwrap();
+        s.try_write(format!("{line}\n").as_bytes()).unwrap();
+        let mut out = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            s.readable().await.unwrap();
+            match s.try_read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => out.extend_from_slice(&buf[..n]),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("{e}"),
+            }
+        }
+        String::from_utf8(out).unwrap()
+    })
+    .await
+    .expect("an answer within the bound")
 }
 
 #[tokio::test]

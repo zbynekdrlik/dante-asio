@@ -37,10 +37,10 @@
 
 pub mod dsyx;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::sync::atomic::{AtomicI32, AtomicI64};
 
 pub use dsyx::{DateState, Reading};
@@ -321,11 +321,22 @@ pub fn from_stamp(secs: u32, sub: u32, rate: u32, near: u64) -> u64 {
     (if index < 0 { index + period } else { index }) as u64
 }
 
-#[cfg(target_os = "linux")]
-pub use linux::{DANTESYNC, MonoClock, POLL, Poller, monotonic_ns, poll_dantesync, realtime_ns};
+#[cfg(any(target_os = "linux", windows))]
+pub use os::{DANTESYNC, MonoClock, POLL, Poller, monotonic_ns, poll_dantesync, realtime_ns};
 
 #[cfg(target_os = "linux")]
-mod linux {
+#[path = "clock/sys_linux.rs"]
+mod sys;
+#[cfg(windows)]
+#[path = "clock/sys_windows.rs"]
+mod sys;
+
+/// The poller and the clock on the OS's wall and monotonic clocks
+/// ([`sys`]): Linux's `CLOCK_REALTIME` and `CLOCK_MONOTONIC`; on Windows
+/// the precise system time for both (dantesync steers its rate; QPC is not
+/// steered), so a date step there moves k (a re-anchor), see `sys_windows`.
+#[cfg(any(target_os = "linux", windows))]
+mod os {
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
     use std::time::Duration;
 
@@ -345,26 +356,7 @@ mod linux {
     /// k before the clock is ready.
     const NOT_READY: i64 = i64::MIN;
 
-    fn read(clock: libc::clockid_t) -> i64 {
-        let mut ts = libc::timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        // SAFETY: `ts` is a valid, writable timespec; clock_gettime only
-        // writes it, and a clock id it does not know leaves it zero.
-        unsafe { libc::clock_gettime(clock, &mut ts) };
-        ts.tv_sec * 1_000_000_000 + ts.tv_nsec
-    }
-
-    /// The box's `CLOCK_MONOTONIC`, ns.
-    pub fn monotonic_ns() -> i64 {
-        read(libc::CLOCK_MONOTONIC)
-    }
-
-    /// The box's `CLOCK_REALTIME`, ns since 1970.
-    pub fn realtime_ns() -> i64 {
-        read(libc::CLOCK_REALTIME)
-    }
+    pub use super::sys::{monotonic_ns, realtime_ns};
 
     /// PTP time as `CLOCK_MONOTONIC` + k, k set by the poller.
     #[derive(Debug)]
@@ -414,23 +406,8 @@ mod linux {
                 std::thread::sleep(Duration::from_nanos(NOT_READY_NAP_NS));
                 return;
             };
-            // A time before the box's boot is negative: clock_nanosleep
-            // refuses it and returns at once, as for any past time.
             let target = i64::try_from(i128::from(ptp_ns) - i128::from(k)).unwrap_or(i64::MAX);
-            let ts = libc::timespec {
-                tv_sec: target / 1_000_000_000,
-                tv_nsec: target % 1_000_000_000,
-            };
-            // SAFETY: `ts` is a valid timespec read by the call; the
-            // remaining-time pointer may be null with TIMER_ABSTIME.
-            unsafe {
-                libc::clock_nanosleep(
-                    libc::CLOCK_MONOTONIC,
-                    libc::TIMER_ABSTIME,
-                    &ts,
-                    std::ptr::null_mut(),
-                )
-            };
+            super::sys::sleep_until_monotonic(target);
         }
 
         fn epoch(&self) -> u32 {
