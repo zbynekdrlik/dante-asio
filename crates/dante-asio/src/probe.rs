@@ -29,6 +29,9 @@ pub struct Report {
     pub max_switch_us: u64,
     /// Switches more than 1 ms after the one before.
     pub gaps_over_1ms: u64,
+    /// RX 1's largest magnitude in each second, and the sample of it within
+    /// the second (the impulses' arrivals, whatever their level).
+    pub rx_peaks: Vec<(i32, u64)>,
 }
 
 /// The onset of an arrival: a quarter of the impulse.
@@ -44,6 +47,7 @@ struct State {
     last_emit: Option<u64>,
     round_trips: Vec<u64>,
     emitted: u64,
+    peaks: Vec<(i32, u64)>,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -104,6 +108,14 @@ unsafe fn switch_body(half: i32, _direct: ASIOBool) {
         for k in 0..n {
             // SAFETY: the driver's buffer of `n` samples.
             let v = unsafe { inp.add(k).read() };
+            let at = s.position + k as u64;
+            let second = (at / 96_000) as usize;
+            if s.peaks.len() <= second {
+                s.peaks.resize(second + 1, (0, 0));
+            }
+            if v.unsigned_abs() > s.peaks[second].0.unsigned_abs() {
+                s.peaks[second] = (v, at % 96_000);
+            }
             if v.unsigned_abs() >= ONSET as u32
                 && let Some(e) = s.last_emit.take()
             {
@@ -190,6 +202,7 @@ pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
             last_emit: None,
             round_trips: Vec::new(),
             emitted: 0,
+            peaks: Vec::new(),
         });
         RUNNING.store(1, Ordering::Release);
         if (v.start)(d) != ASE_OK {
@@ -216,6 +229,7 @@ pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
     report.gaps_over_1ms = GAPS_OVER_1MS.load(Ordering::Relaxed);
     report.emitted = s.emitted;
     report.round_trips = s.round_trips;
+    report.rx_peaks = s.peaks;
     Ok(report)
 }
 

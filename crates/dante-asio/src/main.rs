@@ -136,6 +136,9 @@ fn probe(instance: u32, seconds: u64, affinity: Option<usize>) -> Result<(), Str
         r.gaps_over_1ms,
         r.max_switch_us
     );
+    for (second, (peak, at)) in r.rx_peaks.iter().enumerate() {
+        println!("rx1 second {second}: peak {peak} at sample {at}");
+    }
     Ok(())
 }
 
