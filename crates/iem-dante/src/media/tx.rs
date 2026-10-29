@@ -969,10 +969,18 @@ impl Transmitter {
                 // A datagram socket sends the datagram whole or not at all
                 // (the packet fits one: `wire::MAX_DATAGRAM`), so the byte
                 // count says nothing more than `Ok`.
+                let sent_at = std::time::Instant::now();
                 let counter = match socket.send_to(&packet[..n], dest) {
                     Ok(_) => &stats.packets,
                     Err(_) => &stats.send_errors,
                 };
+                // dante-asio, Windows: a send that blocks (Winsock) is
+                // logged with its length (rare by intent; the cause of the
+                // TX schedule's restarts is being found).
+                let took = sent_at.elapsed();
+                if took > std::time::Duration::from_micros(200) {
+                    tracing::warn!(us = took.as_micros() as u64, "a TX send blocked");
+                }
                 counter.fetch_add(1, Ordering::Relaxed);
             }
             stats.holes.fetch_add(holes as u64, Ordering::Relaxed);
