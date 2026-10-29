@@ -384,11 +384,22 @@ pub struct Pump<P: Process> {
     discontinuity: bool,
     /// The processor panicked: never called again.
     faulted: bool,
+    /// Extra playout per RX channel (device index), samples: read that much
+    /// before `start` ([`Pump::with_rx_delay`]).
+    rx_delay: Vec<u64>,
     /// The last block's start, for the interval histogram.
     last_entry: Option<Instant>,
 }
 
 impl<P: Process> Pump<P> {
+    /// The pump with extra playout per RX channel: `delay[rx]` samples
+    /// (device index), read that much before the block's start; channels
+    /// past the vector have none.
+    pub fn with_rx_delay(mut self, delay: Vec<u64>) -> Self {
+        self.rx_delay = delay;
+        self
+    }
+
     /// A pump of `processor` over `map`'s channels with `timing`, its
     /// outputs quantized at `bits`, reading `rx`'s rings and writing `tx`'s
     /// engine rings, counting into `stats`. Every buffer is allocated here.
@@ -418,6 +429,7 @@ impl<P: Process> Pump<P> {
             epoch: None,
             discontinuity: false,
             faulted: false,
+            rx_delay: Vec::new(),
             last_entry: None,
         }
     }
@@ -484,7 +496,8 @@ impl<P: Process> Pump<P> {
         for (chan, &rx) in self.input.chunks_exact_mut(self.frames).zip(&self.map.rx) {
             match rings.get(rx).filter(|_| self.rx.routed(rx)) {
                 Some(ring) => {
-                    ring.read_at(start, &mut self.samples);
+                    let delay = self.rx_delay.get(rx).copied().unwrap_or(0);
+                    ring.read_at(start.saturating_sub(delay), &mut self.samples);
                     for (x, &s) in chan.iter_mut().zip(self.samples.iter()) {
                         *x = to_f64(s);
                     }

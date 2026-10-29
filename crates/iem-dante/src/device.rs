@@ -126,9 +126,20 @@ pub struct DeviceConfig {
     /// when left out.
     #[serde(default)]
     pub io_cpu: Option<usize>,
+    /// Extra playout per RX channel, `[channel, ns]` pairs (channel from 1):
+    /// a source whose packets come later than its advertised latency (a
+    /// Dante Virtual Soundcard on a busy PC: up to 39 ms on the FOH network,
+    /// dante-asio 2026-10-29) is read that much later than P, so its
+    /// packets are not holes, while the other channels keep P. At most
+    /// [`MAX_RX_DELAY_NS`].
+    #[serde(default)]
+    pub rx_delay_ns: Vec<(usize, u64)>,
     /// Where the state ([`DeviceState`]) is kept.
     pub state_file: PathBuf,
 }
+
+/// The most extra playout of one RX channel: 200 ms.
+pub const MAX_RX_DELAY_NS: u64 = 200_000_000;
 
 /// Why a config was refused: every problem, in fields and channel numbers.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -204,6 +215,15 @@ impl DeviceConfig {
         }
         if !(FPP_MIN..=FPP_MAX).contains(&self.tx_fpp_max) {
             out.push(format!("tx_fpp_max: {FPP_MIN} to {FPP_MAX}"));
+        }
+        for &(ch, ns) in &self.rx_delay_ns {
+            if ch == 0 || ch > self.rx.len() || ns > MAX_RX_DELAY_NS {
+                out.push(format!(
+                    "rx_delay_ns: [channel 1 to {}, 0 to {MAX_RX_DELAY_NS} ns]",
+                    self.rx.len()
+                ));
+                break;
+            }
         }
         if !(FPP_MIN..=FPP_MAX).contains(&self.arc_rx_fpp) {
             out.push(format!("arc_rx_fpp: {FPP_MIN} to {FPP_MAX}"));
