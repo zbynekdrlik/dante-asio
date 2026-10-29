@@ -188,3 +188,16 @@ pub fn probe(instance: u32, seconds: u64) -> Result<Report, String> {
     report.round_trips = s.round_trips;
     Ok(report)
 }
+
+/// This process's CPUs (`mask`, one bit a CPU of the first group).
+pub fn set_affinity(mask: usize) -> Result<(), String> {
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, SetProcessAffinityMask};
+    // SAFETY: the pseudo handle of this process and a mask.
+    if unsafe { SetProcessAffinityMask(GetCurrentProcess(), mask) } == 0 {
+        return Err(format!(
+            "the affinity {mask:#x}: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}

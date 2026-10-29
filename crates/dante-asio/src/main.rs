@@ -13,7 +13,7 @@ fn usage() -> ExitCode {
         "usage: dante-asio run --instance <n> --config <device.toml> --ip <address> [--log <file>]\n       \
          dante-asio register --instance <n> --dll <path>\n       \
          dante-asio stop --instance <n>\n       \
-         dante-asio probe --instance <n> [--seconds <s>]\n       \
+         dante-asio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
          dante-asio unregister --instance <n>"
     );
     ExitCode::from(2)
@@ -63,7 +63,11 @@ fn main() -> ExitCode {
             let seconds = flag(&args, "--seconds")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(10);
-            probe(instance, seconds)
+            // `--affinity <hex mask>`: the probe's own CPUs (a DAW's worker
+            // runs in the DAW's set, not on the device's cores).
+            let affinity = flag(&args, "--affinity")
+                .and_then(|m| usize::from_str_radix(m.trim_start_matches("0x"), 16).ok());
+            probe(instance, seconds, affinity)
         }
         "unregister" => match dante_asio::register::keys(instance) {
             Some(keys) => remove(&keys),
@@ -109,7 +113,10 @@ fn stop(instance: u32) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn probe(instance: u32, seconds: u64) -> Result<(), String> {
+fn probe(instance: u32, seconds: u64, affinity: Option<usize>) -> Result<(), String> {
+    if let Some(mask) = affinity {
+        dante_asio::probe::set_affinity(mask)?;
+    }
     let r = dante_asio::probe::probe(instance, seconds)?;
     let min = r.round_trips.iter().min();
     let max = r.round_trips.iter().max();
@@ -129,7 +136,7 @@ fn probe(instance: u32, seconds: u64) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn probe(_instance: u32, _seconds: u64) -> Result<(), String> {
+fn probe(_instance: u32, _seconds: u64, _affinity: Option<usize>) -> Result<(), String> {
     Err("Windows only".into())
 }
 
