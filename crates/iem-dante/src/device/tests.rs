@@ -452,7 +452,7 @@ fn the_threads_cpus_are_read_and_bounded() {
 }
 
 #[test]
-fn the_block_is_16_or_32_and_the_work_margin_at_least_one_block() {
+fn the_block_is_16_to_256_and_the_work_margin_at_least_one_block() {
     // #72: B 16 halves the block and lets W go down to 16 (mic to in-ear
     // under 1 ms); a config without `block` keeps 32.
     let with = |lines: &str| config_with("latency_ns =", &format!("latency_ns = 1000000\n{lines}"));
@@ -460,11 +460,18 @@ fn the_block_is_16_or_32_and_the_work_margin_at_least_one_block() {
     assert_eq!((cfg.block, cfg.work_margin), (16, 96));
     let cfg = DeviceConfig::from_toml(&with("block = 32")).unwrap();
     assert_eq!(cfg.block, 32);
+    // dante-asio: the DAW's buffer is the block, up to 256 (W at least one).
+    for block in [64, 128, 256] {
+        let cfg =
+            DeviceConfig::from_toml(&with(&format!("block = {block}\nwork_margin = {block}")))
+                .unwrap();
+        assert_eq!((cfg.block, cfg.work_margin), (block, block));
+    }
     // Any other block is refused naming the field, one problem.
-    for block in [0, 8, 24, 31, 33, 64, 4096] {
+    for block in [0, 8, 24, 31, 33, 48, 512, 4096] {
         assert_eq!(
             problems(&with(&format!("block = {block}"))),
-            vec!["block: 16 or 32 frames".to_string()],
+            vec!["block: 16, 32, 64, 128 or 256 frames".to_string()],
             "{block}"
         );
     }
@@ -489,15 +496,16 @@ fn the_block_is_16_or_32_and_the_work_margin_at_least_one_block() {
         problems(&with("block = 16\nwork_margin = 4097")),
         vec!["work_margin: 16 to 4096 samples".to_string()]
     );
-    // A refused block bounds W at the default's 32: one problem a field.
+    // W below a larger block is refused at that block.
     assert_eq!(
         problems(&with("block = 64\nwork_margin = 48")),
-        vec!["block: 16 or 32 frames".to_string()]
+        vec!["work_margin: 64 to 4096 samples".to_string()]
     );
+    // A refused block bounds W at the default's 32: one problem a field.
     assert_eq!(
         problems(&with("block = 8\nwork_margin = 16")),
         vec![
-            "block: 16 or 32 frames".to_string(),
+            "block: 16, 32, 64, 128 or 256 frames".to_string(),
             "work_margin: 32 to 4096 samples".to_string(),
         ]
     );

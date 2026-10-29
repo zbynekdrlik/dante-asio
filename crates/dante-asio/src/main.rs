@@ -34,11 +34,16 @@ fn main() -> ExitCode {
             .append(true)
             .open(p)
     }) {
-        Some(Ok(file)) => tracing_subscriber::fmt()
-            .with_env_filter(filter())
-            .with_ansi(false)
-            .with_writer(std::sync::Mutex::new(file))
-            .init(),
+        Some(Ok(file)) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(filter())
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file))
+                .init();
+            // Logged to a file: no console window on the PC's screen (the
+            // logon task's console stood over the FOH Ableton).
+            hide_console();
+        }
         Some(Err(e)) => {
             eprintln!("dante-asio: the log file: {e}");
             return ExitCode::FAILURE;
@@ -171,3 +176,13 @@ fn remove(_keys: &[String]) -> Result<(), String> {
 fn run(_instance: u32, _config: std::path::PathBuf, _ip: std::net::Ipv4Addr) -> Result<(), String> {
     Err("Windows only".into())
 }
+
+#[cfg(windows)]
+fn hide_console() {
+    // SAFETY: detaches this process from its console; its window closes
+    // when no other process holds it.
+    unsafe { windows_sys::Win32::System::Console::FreeConsole() };
+}
+
+#[cfg(not(windows))]
+fn hide_console() {}

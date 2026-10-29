@@ -78,7 +78,7 @@ pub struct DeviceConfig {
     /// The latency the channels advertise, in ns (1 to `u32::MAX`, the
     /// width Dante's flow descriptors give it).
     pub latency_ns: u64,
-    /// B, the engine pump's block in frames: one of [`BLOCKS`] (16 or 32),
+    /// B, the engine pump's block in frames: one of [`BLOCKS`] (16 to 256),
     /// [`BLOCK`] when the config leaves it out. 16 halves B and lets W go
     /// down to 16 (#72: mic to in-ear under 1 ms); a config change, no
     /// build, takes it back.
@@ -233,7 +233,7 @@ impl DeviceConfig {
             }
         }
         if !BLOCKS.contains(&self.block) {
-            out.push("block: 16 or 32 frames".to_string());
+            out.push("block: 16, 32, 64, 128 or 256 frames".to_string());
         }
         // W is at least one block: the config's when it is valid, else the
         // default's (one problem a field).

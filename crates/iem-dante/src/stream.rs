@@ -71,7 +71,7 @@ use crate::media::tx::{DISCONTINUITY, TxShared, ask_realtime, ns_of, place};
 pub const BLOCK: u64 = 32;
 /// The blocks a device config may set, frames: 16 halves B (and lets W go
 /// down to 16; #72, mic to in-ear under 1 ms), 32 is [`BLOCK`].
-pub const BLOCKS: [u64; 2] = [16, BLOCK];
+pub const BLOCKS: [u64; 5] = [16, BLOCK, 64, 128, 256];
 /// W: how late a block may run and still be sent in time, samples (1 ms
 /// at 96 kHz). A pump later than this re-bootstraps. The default of the
 /// device's `work_margin` (#72 phase F sweeps it without a build), which
