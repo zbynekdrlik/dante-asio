@@ -7,11 +7,12 @@ use shm::{MAGIC, Shape, Shared};
 #[test]
 fn create_then_open_shares_the_buffers_and_the_header() {
     let shape = Shape::new(4, 2, 64).unwrap();
-    let device = Shared::create(91, shape, 96_000, 208).unwrap();
+    let device = Shared::create(91, shape, 96_000, (88, 40)).unwrap();
     let driver = Shared::open(91).unwrap();
     assert_eq!(driver.shape(), shape);
     assert_eq!(driver.header().magic.load(Ordering::Acquire), MAGIC);
-    assert_eq!(driver.header().offset.load(Ordering::Relaxed), 208);
+    assert_eq!(driver.header().latency_in.load(Ordering::Relaxed), 88);
+    assert_eq!(driver.header().latency_out.load(Ordering::Relaxed), 40);
     let input = device.buffer(1, true, 3).unwrap();
     // SAFETY: a buffer of 64 samples inside the mapping.
     unsafe { input.add(63).write(0x7f00_0000) };
@@ -25,7 +26,7 @@ fn create_then_open_shares_the_buffers_and_the_header() {
 #[test]
 fn the_events_cross_between_the_sides() {
     let shape = Shape::new(1, 1, 32).unwrap();
-    let device = Shared::create(92, shape, 96_000, 128).unwrap();
+    let device = Shared::create(92, shape, 96_000, (56, 40)).unwrap();
     let driver = Shared::open(92).unwrap();
     assert!(!driver.wait_block(10), "nothing published yet");
     device.signal_block();

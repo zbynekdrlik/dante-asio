@@ -1120,6 +1120,8 @@ fn the_devices_tx_margin_sets_when_a_packet_leaves_and_its_latency_the_lag() {
     assert_eq!(w, ns_of(stamp_of(&sent[0]) + FPP, RATE) + 30_000);
 }
 
+// Linux refuses a send to port 0; Windows sends it.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_send_the_socket_refuses_is_counted() {
     let mut rig = Rig::new(Vec::new());

@@ -161,6 +161,8 @@ fn the_box_s_interfaces_include_the_loopback_address() {
     );
 }
 
+// The interface facts come from Linux files (/sys); Windows reads the adapter.
+#[cfg(target_os = "linux")]
 #[test]
 fn an_interface_without_a_usable_mac_is_setup_and_one_not_there_a_run_error() {
     let lo = IfAddr {

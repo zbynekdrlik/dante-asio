@@ -61,8 +61,14 @@ unsafe impl Sync for Shared {}
 
 impl Shared {
     /// The device side: makes instance `instance`'s mapping for `shape`
-    /// (zeroed by the system) with its header, and its events.
-    pub fn create(instance: u32, shape: Shape, rate: u32, offset: u32) -> io::Result<Shared> {
+    /// (zeroed by the system) with its header (`latency`: the DAW's input
+    /// and output latency in samples), and its events.
+    pub fn create(
+        instance: u32,
+        shape: Shape,
+        rate: u32,
+        latency: (u32, u32),
+    ) -> io::Result<Shared> {
         let size = shape.size() as u64;
         // SAFETY: a pagefile-backed mapping with a valid NUL-terminated name.
         let mapping = handle(unsafe {
@@ -82,7 +88,8 @@ impl Shared {
         h.tx.store(shape.tx, Ordering::Relaxed);
         h.block.store(shape.block, Ordering::Relaxed);
         h.rate.store(rate, Ordering::Relaxed);
-        h.offset.store(offset, Ordering::Relaxed);
+        h.latency_in.store(latency.0, Ordering::Relaxed);
+        h.latency_out.store(latency.1, Ordering::Relaxed);
         h.device_pid.store(std::process::id(), Ordering::Relaxed);
         h.magic.store(MAGIC, Ordering::Release);
         Ok(shared)

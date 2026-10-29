@@ -39,8 +39,12 @@ pub struct Header {
     pub block: AtomicU32,
     /// Samples a second.
     pub rate: AtomicU32,
-    /// D in samples (the device's output offset), for the driver's latency.
-    pub offset: AtomicU32,
+    /// The DAW's input latency the driver reports, samples: the age of a
+    /// block's first input sample when the block reaches the DAW (B + P).
+    pub latency_in: AtomicU32,
+    /// The DAW's output latency, samples: from the block's hand-over until
+    /// its first sample plays at a receiver (W + the TX latency we advertise).
+    pub latency_out: AtomicU32,
     /// The device process's id (the driver checks it is alive).
     pub device_pid: AtomicU32,
     /// Blocks the device published (half `seq % 2` is the newest).
@@ -51,7 +55,6 @@ pub struct Header {
     pub heartbeat_ms: AtomicU64,
     /// 1 while a driver has the buffers.
     pub host_attached: AtomicU32,
-    _pad: u32,
     /// Blocks whose outputs came too late (sent as silence).
     pub late: AtomicU64,
 }
