@@ -1051,7 +1051,8 @@ pub(crate) fn place(thread: &str, cpu: Option<usize>) {
     if pin_to_cpu(cpu) {
         info!(thread, cpu, "pinned to its CPU");
     } else {
-        warn!(thread, cpu, "not pinned: the kernel refused that CPU");
+        let error = std::io::Error::last_os_error();
+        warn!(thread, cpu, %error, "not pinned: the kernel refused that CPU");
     }
 }
 

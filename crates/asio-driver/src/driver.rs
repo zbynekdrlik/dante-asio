@@ -593,19 +593,24 @@ impl Job {
         let mut next = Instant::now();
         let mut half = 0i32;
         let mut checked = Instant::now();
+        let mut last = shm
+            .as_ref()
+            .map_or(0, |s| s.header().seq.load(Ordering::Acquire));
         while !self.rt.stop.load(Ordering::Acquire) {
             match shm.as_ref() {
                 Some(s) => {
-                    let ms = QUIET.as_millis() as u32;
-                    if !s.wait_block(ms) {
-                        // A device gone quiet: the DAW keeps its clock on
-                        // silence in the half it would get next.
+                    // The next block is watched in the header (a spin): an
+                    // event's wake came only every ~15 ms on the FOH PC
+                    // (the probe, 2026-10-29: 70 hand-overs a second of
+                    // 3000). Past QUIET without one, the device is quiet:
+                    // the DAW keeps its clock on silence.
+                    let Some(seq) = self.next_seq(s, last) else {
                         half ^= 1;
                         self.silence(s, half as u32);
                         self.switch(&mut time, half);
                         continue;
-                    }
-                    let seq = s.header().seq.load(Ordering::Acquire);
+                    };
+                    last = seq;
                     half = (seq % 2) as i32;
                     self.rt.seq_in_hand.store(seq, Ordering::Release);
                     self.rt.ready_sent.store(false, Ordering::Release);
@@ -635,6 +640,29 @@ impl Job {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// The device's next published block after `last`, watched by a spin
+    /// (yielding the core to any ready thread); `None` after [`QUIET`]
+    /// without one, or when asked to stop.
+    fn next_seq(&self, s: &Shared, last: u64) -> Option<u64> {
+        let until = Instant::now() + QUIET;
+        let mut n = 0u32;
+        loop {
+            let seq = s.header().seq.load(Ordering::Acquire);
+            if seq != last {
+                return Some(seq);
+            }
+            n = n.wrapping_add(1);
+            if n % 1024 == 0 {
+                if self.rt.stop.load(Ordering::Acquire) || Instant::now() >= until {
+                    return None;
+                }
+                std::thread::yield_now();
+            } else {
+                std::hint::spin_loop();
             }
         }
     }
