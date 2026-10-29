@@ -668,12 +668,12 @@ impl Job {
         self.rt.systime_ms.store(ms, Ordering::Release);
         time.timeInfo.samplePosition = Asio64::new(pos);
         time.timeInfo.systemTime = Asio64::new(ms * 1_000_000);
-        if self.time_info {
-            if let Some(f) = self.callbacks.bufferSwitchTimeInfo {
-                // SAFETY: the host's callback with a valid ASIOTime.
-                unsafe { f(time, half, ASIO_TRUE) };
-                return;
-            }
+        if self.time_info
+            && let Some(f) = self.callbacks.bufferSwitchTimeInfo
+        {
+            // SAFETY: the host's callback with a valid ASIOTime.
+            unsafe { f(time, half, ASIO_TRUE) };
+            return;
         }
         if let Some(f) = self.callbacks.bufferSwitch {
             // SAFETY: the host's callback.
