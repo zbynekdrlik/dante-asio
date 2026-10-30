@@ -133,6 +133,8 @@ fn an_impulse_goes_out_through_dante_and_comes_back_to_the_host() {
     }
     std::thread::sleep(Duration::from_secs(2));
 
+    // The host at High priority, as Ableton runs (and `dante-asio probe`).
+    dante_asio::probe::high_priority().expect("High priority");
     let r = dante_asio::probe::probe(INSTANCE, 6).expect("the probe");
     eprintln!("{r:?}");
     let block = u64::from(r.block);
@@ -161,7 +163,22 @@ fn an_impulse_goes_out_through_dante_and_comes_back_to_the_host() {
         r.latency_in,
         r.latency_out
     );
-    assert_eq!(r.late, 0, "outputs the host returned too late");
+    // A late block is the device's fault unless the host itself lost its
+    // CPU: a shared runner's VM deschedules a thread for tens of ms now and
+    // then (a 48.9 ms gap, CI 41130881044). Each host gap over 1 ms may
+    // cost at most the blocks it spans; any other late block fails (the
+    // attach defect b0233cd fixed read late 3 with no gap). Real-time
+    // timing is the FOH PC's gate (HIL, soak).
+    let block_us = block * 1_000_000 / 96_000;
+    let explained = r.gaps_over_1ms * (r.max_gap_us / block_us + 1);
+    assert!(
+        r.late <= explained,
+        "{} late blocks, {} explained by {} host gaps over 1 ms (longest {} us)",
+        r.late,
+        explained,
+        r.gaps_over_1ms,
+        r.max_gap_us
+    );
 
     // A stop as `install.ps1` and the service ask it: the device ends cleanly.
     let status = Command::new(exe())
