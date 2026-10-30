@@ -31,8 +31,13 @@ fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
+/// In the global namespace: the device runs as a service in session 0 and
+/// the DAW in the user's session; `Local\` names are per session, so a DAW
+/// would never see the service's mapping. Creating a global object needs
+/// SeCreateGlobalPrivilege (the service's LocalSystem, an elevated
+/// process); opening it, only the DACL below.
 fn name(instance: u32, what: &str) -> Vec<u16> {
-    wide(&format!("Local\\dante-asio-{instance}-{what}"))
+    wide(&format!("Global\\dante-asio-{instance}-{what}"))
 }
 
 /// Full access for Authenticated Users, SYSTEM and Administrators.
