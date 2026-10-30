@@ -41,6 +41,30 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
 
+  # Line coverage of the whole workspace may not drop: each OS has its own
+  # floor (the Windows run also covers the driver, the mapping and the
+  # device's Windows code). Raise a floor whenever coverage rises.
+  coverage:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            floor: 60
+          - os: windows-2025
+            floor: 60
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-llvm-cov@0.9.1
+      - run: cargo llvm-cov --workspace --locked --summary-only --fail-under-lines ${{ matrix.floor }}
+
   version:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
