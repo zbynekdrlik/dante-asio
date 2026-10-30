@@ -2,13 +2,21 @@
 //! `Local\dante-asio-<n>-block` (the device signals a published block) and
 //! `Local\dante-asio-<n>-ready` (the driver signals returned outputs), both
 //! auto-reset. `Local\`: the device process and the DAW run in the same
-//! user session.
+//! desktop session, though not always as the same user (the FOH PC's master
+//! Ableton has its own user, the device runs elevated), so the device gives
+//! the objects a DACL for any signed-in user.
 
 use std::io;
 use std::ptr::NonNull;
 use std::sync::atomic::Ordering;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WAIT_OBJECT_0,
+};
+use windows_sys::Win32::Security::Authorization::{
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+};
+use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::System::Memory::{
     CreateFileMappingW, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
     OpenFileMappingW, PAGE_READWRITE, UnmapViewOfFile,
@@ -25,6 +33,47 @@ fn wide(s: &str) -> Vec<u16> {
 
 fn name(instance: u32, what: &str) -> Vec<u16> {
     wide(&format!("Local\\dante-asio-{instance}-{what}"))
+}
+
+/// Full access for Authenticated Users, SYSTEM and Administrators.
+const OBJECT_SDDL: &str = "D:(A;;GA;;;AU)(A;;GA;;;SY)(A;;GA;;;BA)";
+
+/// The security descriptor the device makes its objects with.
+struct ObjectSecurity(PSECURITY_DESCRIPTOR);
+
+impl ObjectSecurity {
+    fn new() -> io::Result<ObjectSecurity> {
+        let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // SAFETY: a valid NUL-terminated string; `sd` receives a LocalAlloc'd
+        // descriptor this struct frees.
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                wide(OBJECT_SDDL).as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(ObjectSecurity(sd))
+    }
+
+    fn attributes(&self) -> SECURITY_ATTRIBUTES {
+        SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: self.0,
+            bInheritHandle: 0,
+        }
+    }
+}
+
+impl Drop for ObjectSecurity {
+    fn drop(&mut self) {
+        // SAFETY: the descriptor the conversion allocated, freed once.
+        unsafe { LocalFree(self.0) };
+    }
 }
 
 struct Handle(HANDLE);
@@ -70,18 +119,21 @@ impl Shared {
         latency: (u32, u32),
     ) -> io::Result<Shared> {
         let size = shape.size() as u64;
-        // SAFETY: a pagefile-backed mapping with a valid NUL-terminated name.
+        let security = ObjectSecurity::new()?;
+        let attributes = security.attributes();
+        // SAFETY: a pagefile-backed mapping with a valid NUL-terminated name;
+        // `attributes` outlives the call.
         let mapping = handle(unsafe {
             CreateFileMappingW(
                 INVALID_HANDLE_VALUE,
-                std::ptr::null(),
+                &attributes,
                 PAGE_READWRITE,
                 (size >> 32) as u32,
                 size as u32,
                 name(instance, "shm").as_ptr(),
             )
         })?;
-        let shared = Self::map(mapping, shape, instance, true)?;
+        let shared = Self::map(mapping, shape, instance, Some(&attributes))?;
         let h = shared.header();
         h.version.store(VERSION, Ordering::Relaxed);
         h.rx.store(shape.rx, Ordering::Relaxed);
@@ -136,22 +188,28 @@ impl Shared {
                 ));
             }
         };
-        Self::map(mapping, shape, instance, false)
+        Self::map(mapping, shape, instance, None)
     }
 
-    fn map(mapping: Handle, shape: Shape, instance: u32, create: bool) -> io::Result<Shared> {
+    /// `create`: the device makes the events with these attributes; `None`:
+    /// the driver opens them.
+    fn map(
+        mapping: Handle,
+        shape: Shape,
+        instance: u32,
+        create: Option<&SECURITY_ATTRIBUTES>,
+    ) -> io::Result<Shared> {
         // SAFETY: a valid mapping handle of at least `shape.size()` bytes.
         let view: MEMORY_MAPPED_VIEW_ADDRESS =
             unsafe { MapViewOfFile(mapping.0, FILE_MAP_ALL_ACCESS, 0, 0, shape.size()) };
         let view = NonNull::new(view.Value.cast::<u8>()).ok_or_else(io::Error::last_os_error)?;
         let event = |what: &str| -> io::Result<Handle> {
             let n = name(instance, what);
-            handle(if create {
+            handle(match create {
                 // SAFETY: an auto-reset, unsignalled event with a valid name.
-                unsafe { CreateEventW(std::ptr::null(), 0, 0, n.as_ptr()) }
-            } else {
+                Some(a) => unsafe { CreateEventW(a, 0, 0, n.as_ptr()) },
                 // SAFETY: a valid name.
-                unsafe { OpenEventW(EVENT_ALL_ACCESS, 0, n.as_ptr()) }
+                None => unsafe { OpenEventW(EVENT_ALL_ACCESS, 0, n.as_ptr()) },
             })
         };
         let block = event("block")?;

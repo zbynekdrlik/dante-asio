@@ -42,7 +42,6 @@ fn opening_an_instance_no_device_made_is_not_found() {
     assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
 }
 
-
 // A DAW may run as another user than the device (the FOH PC's master Ableton
 // does) and the device runs elevated: without an explicit DACL only the
 // device's own user reaches the objects, and the driver silently free-runs.
