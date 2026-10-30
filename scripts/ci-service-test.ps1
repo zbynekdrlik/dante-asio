@@ -61,6 +61,12 @@ Start-Sleep -Seconds 2
 $probe = (& $exe probe --instance $instance --seconds 3) -join "`n"
 if ($LASTEXITCODE -ne 0) { throw "probe failed ($LASTEXITCODE):`n$probe" }
 Write-Output $probe
+# The host must reach the SERVICE's device (session 0) from this session: a
+# driver that cannot see the device free-runs and reports its block as both
+# latencies; the device reports B + P in and W + its TX latency out.
+if ($probe -notmatch "block (\d+) latency_in (\d+) latency_out (\d+)") { throw "no latencies in the probe's line" }
+$block, $in, $out = [int]$Matches[1], [int]$Matches[2], [int]$Matches[3]
+if ($in -le $block -or $out -le $block) { throw "the probe ran without the service's device (latency $in/$out at block $block)" }
 if ($probe -notmatch "switches (\d+)") { throw "no switches in the probe's line" }
 $switches = [int]$Matches[1]
 # 3 s at the test device's block (at most 256 frames at 96 kHz): over 1000.
