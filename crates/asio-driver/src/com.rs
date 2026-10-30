@@ -1,13 +1,15 @@
 //! The COM in-process server: `DllGetClassObject` hands a class factory for
 //! a registered instance's CLSID; the factory makes that instance's driver.
 //! An ASIO host passes the CLSID as the interface id too, so the driver
-//! answers its own CLSID (and IUnknown).
+//! answers its own CLSID (and IUnknown). Methods that build objects run in
+//! [`guard`]: a panic never unwinds into the host.
 
 use core::ffi::c_void;
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use crate::abi::*;
 use crate::driver::Driver;
+use crate::guard::guard;
 use crate::ident::instance_of;
 
 /// Live objects (factories and drivers) and server locks.
@@ -36,29 +38,31 @@ pub unsafe extern "system" fn DllGetClassObject(
     riid: *const Guid,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    if ppv.is_null() || rclsid.is_null() || riid.is_null() {
-        return E_POINTER;
-    }
-    // SAFETY: checked non-null; COM's pointers.
-    unsafe { *ppv = core::ptr::null_mut() };
-    // SAFETY: as above.
-    let Some(instance) = instance_of(unsafe { &*rclsid }) else {
-        return CLASS_E_CLASSNOTAVAILABLE;
-    };
-    // SAFETY: as above.
-    let iid = unsafe { *riid };
-    if iid != IID_ICLASSFACTORY && iid != IID_IUNKNOWN {
-        return E_NOINTERFACE;
-    }
-    let f = Box::new(Factory {
-        vtbl: &FACTORY_VTBL,
-        refs: AtomicU32::new(1),
-        instance,
-    });
-    OBJECTS.fetch_add(1, Ordering::AcqRel);
-    // SAFETY: checked non-null.
-    unsafe { *ppv = Box::into_raw(f).cast() };
-    S_OK
+    guard(E_UNEXPECTED, || {
+        if ppv.is_null() || rclsid.is_null() || riid.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: checked non-null; COM's pointers.
+        unsafe { *ppv = core::ptr::null_mut() };
+        // SAFETY: as above.
+        let Some(instance) = instance_of(unsafe { &*rclsid }) else {
+            return CLASS_E_CLASSNOTAVAILABLE;
+        };
+        // SAFETY: as above.
+        let iid = unsafe { *riid };
+        if iid != IID_ICLASSFACTORY && iid != IID_IUNKNOWN {
+            return E_NOINTERFACE;
+        }
+        let f = Box::new(Factory {
+            vtbl: &FACTORY_VTBL,
+            refs: AtomicU32::new(1),
+            instance,
+        });
+        OBJECTS.fetch_add(1, Ordering::AcqRel);
+        // SAFETY: checked non-null.
+        unsafe { *ppv = Box::into_raw(f).cast() };
+        S_OK
+    })
 }
 
 /// S_OK once no object lives and no lock is held.
@@ -121,24 +125,26 @@ unsafe extern "system" fn factory_create(
     riid: *const Guid,
     ppv: *mut *mut c_void,
 ) -> HRESULT {
-    if ppv.is_null() || riid.is_null() {
-        return E_POINTER;
-    }
-    // SAFETY: checked non-null.
-    unsafe { *ppv = core::ptr::null_mut() };
-    if !outer.is_null() {
-        return CLASS_E_NOAGGREGATION;
-    }
-    // SAFETY: `this` is a live Factory.
-    let instance = unsafe { &*(this as *const Factory) }.instance;
-    // SAFETY: COM's valid pointer.
-    let iid = unsafe { *riid };
-    if iid != IID_IUNKNOWN && instance_of(&iid) != Some(instance) {
-        return E_NOINTERFACE;
-    }
-    // SAFETY: checked non-null.
-    unsafe { *ppv = Driver::new_raw(instance) };
-    S_OK
+    guard(E_UNEXPECTED, || {
+        if ppv.is_null() || riid.is_null() {
+            return E_POINTER;
+        }
+        // SAFETY: checked non-null.
+        unsafe { *ppv = core::ptr::null_mut() };
+        if !outer.is_null() {
+            return CLASS_E_NOAGGREGATION;
+        }
+        // SAFETY: `this` is a live Factory.
+        let instance = unsafe { &*(this as *const Factory) }.instance;
+        // SAFETY: COM's valid pointer.
+        let iid = unsafe { *riid };
+        if iid != IID_IUNKNOWN && instance_of(&iid) != Some(instance) {
+            return E_NOINTERFACE;
+        }
+        // SAFETY: checked non-null.
+        unsafe { *ppv = Driver::new_raw(instance) };
+        S_OK
+    })
 }
 
 unsafe extern "system" fn factory_lock(_this: *mut c_void, lock: i32) -> HRESULT {

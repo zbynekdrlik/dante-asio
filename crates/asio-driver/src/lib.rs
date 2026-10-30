@@ -9,6 +9,7 @@
 //! device is there.
 
 pub mod abi;
+pub mod guard;
 pub mod ident;
 
 #[cfg(windows)]
