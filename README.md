@@ -5,6 +5,6 @@ talks to Dante directly, at the lowest latency the PC holds. Several instances r
 each with its own Dante name, address, channels and buffer, set from a tray icon.
 
 Built on the Dante stack of [iemmixer](https://github.com/zbynekdrlik/iemmixer)
-(`iem-dante`, copied, see `crates/iem-dante/COPIED.md`). Design: `docs/design/`; plan: `docs/plans/`.
+(`iem-dante`, from [dante-stack](https://github.com/zbynekdrlik/dante-stack)). Design: `docs/design/`; plan: `docs/plans/`.
 
 License: GPL-3.0-or-later.
