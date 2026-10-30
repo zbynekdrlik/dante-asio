@@ -52,10 +52,9 @@ jobs:
           # Measured 75.37 % (86a20d9).
           - os: ubuntu-24.04
             floor: 73
-          # Measured 55.03 % (86a20d9): the device's run, probe and CLI have
-          # no Windows test yet; the E2E raises it.
+          # Measured 70.72 % (b0233cd, with the E2E).
           - os: windows-2025
-            floor: 53
+            floor: 68
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
