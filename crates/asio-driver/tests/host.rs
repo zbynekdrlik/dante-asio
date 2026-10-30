@@ -218,6 +218,122 @@ unsafe extern "C" fn count_only(_half: i32, _direct: ASIOBool) {
     FREE.fetch_add(1, Ordering::AcqRel);
 }
 
+// A host whose callback never returns (until the test lets it go).
+static HUNG_IN: AtomicU32 = AtomicU32::new(0);
+static LET_GO: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "C" fn hang(_half: i32, _direct: ASIOBool) {
+    HUNG_IN.store(1, Ordering::Release);
+    let t = Instant::now();
+    while LET_GO.load(Ordering::Acquire) == 0 && t.elapsed() < Duration::from_secs(8) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn stop_returns_while_the_host_s_callback_hangs() {
+    let d = driver(7);
+    let mut infos: Vec<ASIOBufferInfo> = (0..2)
+        .map(|k| ASIOBufferInfo {
+            isInput: k,
+            channelNum: 0,
+            buffers: [core::ptr::null_mut(); 2],
+        })
+        .collect();
+    let cb = ASIOCallbacks {
+        bufferSwitch: Some(hang),
+        sampleRateDidChange: None,
+        asioMessage: Some(message),
+        bufferSwitchTimeInfo: None,
+    };
+    // SAFETY: as a host.
+    unsafe {
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        assert_eq!(
+            (vt(d).createBuffers)(d, infos.as_mut_ptr(), 2, 32, &cb),
+            ASE_OK
+        );
+        assert_eq!((vt(d).start)(d), ASE_OK);
+    }
+    let t = Instant::now();
+    while HUNG_IN.load(Ordering::Acquire) == 0 && t.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(HUNG_IN.load(Ordering::Acquire), 1, "the callback runs");
+    let t = Instant::now();
+    // SAFETY: as a host.
+    unsafe {
+        (vt(d).stop)(d);
+        (vt(d).disposeBuffers)(d);
+    }
+    let took = t.elapsed();
+    LET_GO.store(1, Ordering::Release);
+    // SAFETY: as a host ends.
+    unsafe { (vt(d).Release)(d) };
+    assert!(
+        took < Duration::from_secs(3),
+        "stop and disposeBuffers waited {took:?} for a hung callback"
+    );
+}
+
+#[test]
+fn output_buffers_start_silent() {
+    let shape = Shape::new(1, 2, 32).unwrap();
+    let device = Shared::create(8, shape, 96_000, (56, 40)).unwrap();
+    // What a previous session left in the outputs.
+    for half in 0..2 {
+        for ch in 0..2 {
+            let p = device.buffer(half, false, ch).unwrap();
+            for k in 0..32 {
+                // SAFETY: 32 samples.
+                unsafe { p.add(k).write(0x7f00) };
+            }
+        }
+    }
+    let d = driver(8);
+    let mut infos: Vec<ASIOBufferInfo> = [(1, 0), (0, 0), (0, 1)]
+        .iter()
+        .map(|&(input, ch)| ASIOBufferInfo {
+            isInput: input,
+            channelNum: ch,
+            buffers: [core::ptr::null_mut(); 2],
+        })
+        .collect();
+    let cb = ASIOCallbacks {
+        bufferSwitch: Some(count_only),
+        sampleRateDidChange: None,
+        asioMessage: Some(message),
+        bufferSwitchTimeInfo: None,
+    };
+    // SAFETY: as a host.
+    unsafe {
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        assert_eq!(
+            (vt(d).createBuffers)(d, infos.as_mut_ptr(), 3, 32, &cb),
+            ASE_OK
+        );
+    }
+    for info in &infos[1..] {
+        for half in 0..2 {
+            let p = info.buffers[half] as *const i32;
+            for k in 0..32 {
+                // SAFETY: an output buffer of 32 samples the driver handed out.
+                assert_eq!(
+                    unsafe { p.add(k).read() },
+                    0,
+                    "output {} half {half}",
+                    info.channelNum
+                );
+            }
+        }
+    }
+    // SAFETY: as a host ends.
+    unsafe {
+        (vt(d).disposeBuffers)(d);
+        (vt(d).Release)(d);
+    }
+}
+
 #[test]
 fn an_unknown_clsid_is_not_available() {
     let mut other = clsid(1).unwrap();
