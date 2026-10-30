@@ -192,6 +192,10 @@ impl Driver {
         let Some(w) = state.worker.take() else {
             return;
         };
+        // No more answers: the device stops waiting for them first.
+        if let Some(s) = self.rt.shm.get() {
+            s.header().host_attached.store(0, Ordering::Release);
+        }
         w.stop.store(true, Ordering::Release);
         // A handle handed back is dropped here: the thread is left running.
         if join_within(w.handle, STOP_WAIT).is_err() {
@@ -361,6 +365,11 @@ unsafe extern "system" fn start(this: *mut c_void) -> ASIOError {
         {
             Ok(handle) => {
                 st.worker = Some(Worker { handle, stop });
+                // From now on the host answers blocks: the device waits for
+                // each answer (and counts a missing one as late).
+                if let Some(s) = d.rt.shm.get() {
+                    s.header().host_attached.store(1, Ordering::Release);
+                }
                 ASE_OK
             }
             Err(e) => {
@@ -618,9 +627,6 @@ unsafe extern "system" fn create_buffers(
                     core::ptr::null_mut(),
                 ) == 1
         });
-        if let Some(s) = shm {
-            s.header().host_attached.store(1, Ordering::Release);
-        }
         st.created = Some(Created {
             callbacks,
             time_info,
