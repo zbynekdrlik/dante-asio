@@ -4,7 +4,9 @@
 # - copies dante-asio.exe and dante_asio_driver.dll to C:\Program Files\dante-asio
 #   (a running instance is stopped first: its service, or the logon task an
 #   older install made, which is removed),
-# - adds -Ip to the interface (SkipAsSource: the PC's own traffic keeps its address),
+# - adds -Ip to the interface (SkipAsSource: the PC's own traffic keeps its address)
+#   unless the interface has it already; an address it added is remembered in the
+#   instance's folder, so uninstall.ps1 removes only that,
 # - registers the driver for the instance (HKLM: its COM class and its ASIO entry),
 # - puts the device config at C:\ProgramData\dante-asio\instance-<n>\device.toml,
 # - makes the service "dante-asio-<n>" (LocalSystem, started at boot before any
@@ -17,7 +19,10 @@ param(
     [Parameter(Mandatory)][ValidateRange(8, 30)][int]$PrefixLength,
     [Parameter(Mandatory)][string]$Config,
     # The name DAWs list the driver under (HKLM\SOFTWARE\ASIO), e.g. master-asio-dante.
-    [string]$Name = ""
+    [string]$Name = "",
+    # CI only: the stack's test clock (this machine's clock, no dantesync).
+    # Never on a real Dante network.
+    [switch]$TestClock
 )
 $ErrorActionPreference = "Stop"
 
@@ -60,8 +65,10 @@ Copy-Item (Join-Path $here "dante-asio.exe"), (Join-Path $here "dante_asio_drive
 $cfg = Join-Path $data "device.toml"
 Copy-Item $Config $cfg -Force
 
+$added = Join-Path $data "added-ip"
 if (-not (Get-NetIPAddress -IPAddress $Ip -ErrorAction SilentlyContinue)) {
     New-NetIPAddress -InterfaceAlias $InterfaceAlias -IPAddress $Ip -PrefixLength $PrefixLength -SkipAsSource $true | Out-Null
+    Set-Content -Path $added -Value $Ip
 }
 
 $exe = Join-Path $bin "dante-asio.exe"
@@ -72,6 +79,7 @@ if ($LASTEXITCODE -ne 0) { throw "register failed ($LASTEXITCODE)" }
 
 $log = Join-Path $data "dante-asio.log"
 $bin_path = "`"$exe`" service --instance $Instance --config `"$cfg`" --ip $Ip --log `"$log`""
+if ($TestClock) { $bin_path += " --clock system" }
 $existing = Get-CimInstance Win32_Service -Filter "Name='$service'"
 if ($existing) {
     # Through CIM: the path's quotes reach the SCM unchanged (sc.exe's

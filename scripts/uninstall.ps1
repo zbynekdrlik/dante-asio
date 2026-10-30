@@ -1,7 +1,7 @@
 # dante-asio: remove one instance (plan Task 9). Run as administrator:
 #   .\uninstall.ps1 -Instance 1 -Ip <its address>
 # Stops and removes its service (and a logon task an older install made),
-# unregisters its driver entry, removes its address from the interface. The
+# unregisters its driver entry, removes the address install.ps1 added. The
 # files in C:\Program Files\dante-asio stay (other instances use them); its
 # data folder stays (the device's names).
 param(
@@ -39,7 +39,13 @@ if (Test-Path $exe) {
     & $exe unregister --instance $Instance @named
     if ($LASTEXITCODE -ne 0) { throw "unregister failed ($LASTEXITCODE)" }
 }
-if (Get-NetIPAddress -IPAddress $Ip -ErrorAction SilentlyContinue) {
-    Remove-NetIPAddress -IPAddress $Ip -Confirm:$false
+# Only an address install.ps1 added (an address the interface had before
+# stays: it may be the PC's own).
+$added = Join-Path $env:ProgramData "dante-asio\instance-$Instance\added-ip"
+if ((Test-Path $added) -and ((Get-Content $added) -eq $Ip)) {
+    if (Get-NetIPAddress -IPAddress $Ip -ErrorAction SilentlyContinue) {
+        Remove-NetIPAddress -IPAddress $Ip -Confirm:$false
+    }
+    Remove-Item $added
 }
 Write-Output "dante-asio instance $Instance removed"
