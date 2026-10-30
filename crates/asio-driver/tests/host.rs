@@ -136,9 +136,17 @@ fn a_block_reaches_the_host_and_back_and_the_buffer_size_is_the_instance_s() {
     }
     assert_eq!(create(d, 32), ASE_INVALID_MODE, "only the instance's block");
     assert_eq!(create(d, 64), ASE_OK);
-    assert_eq!(device.header().host_attached.load(Ordering::Acquire), 1);
+    // Attached only while the host's callbacks run: from start to stop. The
+    // device expects an answer to every block while attached, and counts
+    // the blocks without one as late.
+    assert_eq!(
+        device.header().host_attached.load(Ordering::Acquire),
+        0,
+        "buffers alone do not answer blocks"
+    );
     // SAFETY: as a host.
     assert_eq!(unsafe { (vt(d).start)(d) }, ASE_OK);
+    assert_eq!(device.header().host_attached.load(Ordering::Acquire), 1);
     // The device publishes block 3 in half 1: a ramp on its input.
     let input = device.buffer(1, true, 0).unwrap();
     for k in 0..64 {
@@ -158,6 +166,11 @@ fn a_block_reaches_the_host_and_back_and_the_buffer_size_is_the_instance_s() {
     // SAFETY: as a host ends.
     unsafe {
         assert_eq!((vt(d).stop)(d), ASE_OK);
+        assert_eq!(
+            device.header().host_attached.load(Ordering::Acquire),
+            0,
+            "a stopped host answers no block"
+        );
         assert_eq!((vt(d).disposeBuffers)(d), ASE_OK);
         assert_eq!(device.header().host_attached.load(Ordering::Acquire), 0);
         (vt(d).Release)(d);
