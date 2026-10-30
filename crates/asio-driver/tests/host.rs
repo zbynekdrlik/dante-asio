@@ -218,6 +218,71 @@ unsafe extern "C" fn count_only(_half: i32, _direct: ASIOBool) {
     FREE.fetch_add(1, Ordering::AcqRel);
 }
 
+// A host that counts the driver's reset requests.
+static RESETS: AtomicU32 = AtomicU32::new(0);
+
+unsafe extern "C" fn count_resets(sel: i32, _val: i32, _m: *mut c_void, _o: *mut f64) -> i32 {
+    if sel == K_ASIO_RESET_REQUEST {
+        RESETS.fetch_add(1, Ordering::AcqRel);
+    }
+    0
+}
+
+unsafe extern "C" fn ignore(_half: i32, _direct: ASIOBool) {}
+
+#[test]
+fn a_reshaped_device_gets_one_reset_request_within_the_budget() {
+    let shape = Shape::new(1, 1, 32).unwrap();
+    let device = Shared::create(9, shape, 96_000, (56, 40)).unwrap();
+    let d = driver(9);
+    let mut infos: Vec<ASIOBufferInfo> = (0..2)
+        .map(|k| ASIOBufferInfo {
+            isInput: k,
+            channelNum: 0,
+            buffers: [core::ptr::null_mut(); 2],
+        })
+        .collect();
+    let cb = ASIOCallbacks {
+        bufferSwitch: Some(ignore),
+        sampleRateDidChange: None,
+        asioMessage: Some(count_resets),
+        bufferSwitchTimeInfo: None,
+    };
+    // SAFETY: as a host.
+    unsafe {
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        assert_eq!(
+            (vt(d).createBuffers)(d, infos.as_mut_ptr(), 2, 32, &cb),
+            ASE_OK
+        );
+        assert_eq!((vt(d).start)(d), ASE_OK);
+    }
+    let wait_for = |n: u32, limit: Duration| {
+        let t = Instant::now();
+        while RESETS.load(Ordering::Acquire) < n && t.elapsed() < limit {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+    // The device came back with another block (its tray changed it).
+    device.header().block.store(64, Ordering::Release);
+    wait_for(1, Duration::from_secs(3));
+    assert_eq!(RESETS.load(Ordering::Acquire), 1, "one reset request");
+    // And changed again at once: the budget holds the next request back.
+    device.header().block.store(128, Ordering::Release);
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(
+        RESETS.load(Ordering::Acquire),
+        1,
+        "no second request within 5 min"
+    );
+    // SAFETY: as a host ends.
+    unsafe {
+        (vt(d).stop)(d);
+        (vt(d).disposeBuffers)(d);
+        (vt(d).Release)(d);
+    }
+}
+
 // A host whose callback never returns (until the test lets it go).
 static HUNG_IN: AtomicU32 = AtomicU32::new(0);
 static LET_GO: AtomicU32 = AtomicU32::new(0);
