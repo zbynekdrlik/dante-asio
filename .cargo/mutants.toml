@@ -15,4 +15,4 @@ exclude_globs = [
   "crates/dante-asio/src/service/windows.rs",
 ]
 # The `win` modules of register.rs and bridge.rs: Windows-only too.
-exclude_re = ["::win::"]
+exclude_re = ["\\bwin::"]

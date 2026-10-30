@@ -69,8 +69,11 @@ mod tests {
     fn a_thread_that_does_not_end_is_handed_back_after_the_bound() {
         let go = Arc::new(AtomicBool::new(false));
         let g = Arc::clone(&go);
+        // Ends on its own after 3 s at the latest, so a wait that ignores
+        // the bound fails the test instead of hanging it.
         let h = std::thread::spawn(move || {
-            while !g.load(Ordering::Acquire) {
+            let t = Instant::now();
+            while !g.load(Ordering::Acquire) && t.elapsed() < Duration::from_secs(3) {
                 std::thread::sleep(Duration::from_millis(1));
             }
         });

@@ -49,6 +49,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_driver_name_carries_the_instance_and_fits_asio_s_32_bytes() {
+        assert_eq!(driver_name(3), "dante-asio 3");
+        assert!(driver_name(MAX_INSTANCES).len() <= 31);
+    }
+
+    #[test]
     fn each_instance_has_its_own_clsid_and_is_found_from_it() {
         assert_eq!(clsid(0), None);
         assert_eq!(clsid(MAX_INSTANCES + 1), None);

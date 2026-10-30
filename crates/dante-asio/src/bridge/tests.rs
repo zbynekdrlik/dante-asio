@@ -105,3 +105,16 @@ fn samples_convert_exactly_both_ways() {
     }
     assert_eq!(to_i32(2.0), i32::MAX);
 }
+
+#[test]
+fn the_first_block_reads_no_output_whatever_the_buffers_hold() {
+    let mut b = Bridge::new(Fake::new(true, false, 4));
+    // A previous session's block still in both halves.
+    *b.link.outputs.lock().unwrap() = [vec![1 << 20; 4], vec![1 << 20; 4]];
+    assert_eq!(run(&mut b, &[0.5; 4]), vec![0.0; 4]);
+    assert_eq!(
+        b.link.late.load(Ordering::Relaxed),
+        0,
+        "nothing was asked yet"
+    );
+}

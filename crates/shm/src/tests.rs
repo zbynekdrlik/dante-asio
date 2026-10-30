@@ -50,3 +50,12 @@ fn the_header_is_one_cache_line_aligned_block() {
     assert_eq!(std::mem::align_of::<Header>(), ALIGN);
     assert_eq!(MAGIC.to_le_bytes(), *b"DASI");
 }
+
+#[test]
+fn the_size_is_the_header_then_two_halves() {
+    let header = std::mem::size_of::<Header>().next_multiple_of(ALIGN);
+    // 1 + 1 channels of 32 samples: two 128-byte buffers a half.
+    assert_eq!(Shape::new(1, 1, 32).unwrap().size(), header + 2 * 2 * 128);
+    // 16 samples: 64 bytes, already aligned; 3 + 2 channels.
+    assert_eq!(Shape::new(3, 2, 16).unwrap().size(), header + 2 * 5 * 64);
+}

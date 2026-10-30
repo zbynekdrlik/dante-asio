@@ -51,6 +51,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_numbers_are_iemmixer_s() {
+        assert_eq!(MIN_GAP, Duration::from_secs(300));
+        assert_eq!(MAX, 3);
+    }
+
+    #[test]
     fn one_request_per_gap() {
         let t = Instant::now();
         let mut b = Budget::new();

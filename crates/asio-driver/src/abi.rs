@@ -216,3 +216,36 @@ pub const E_POINTER: HRESULT = 0x8000_4003_u32 as i32;
 pub const E_UNEXPECTED: HRESULT = 0x8000_FFFF_u32 as i32;
 pub const CLASS_E_CLASSNOTAVAILABLE: HRESULT = 0x8004_0111_u32 as i32;
 pub const CLASS_E_NOAGGREGATION: HRESULT = 0x8004_0110_u32 as i32;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The values the ASIO SDK's asio.h defines: a DAW compares against
+    /// these numbers, not our names.
+    #[test]
+    fn the_constants_are_the_sdk_s() {
+        assert_eq!(
+            [
+                ASE_NOT_PRESENT,
+                ASE_HW_MALFUNCTION,
+                ASE_INVALID_PARAMETER,
+                ASE_INVALID_MODE,
+                ASE_SP_NOT_ADVANCING,
+                ASE_NO_CLOCK,
+                ASE_NO_MEMORY,
+            ],
+            [-1000, -999, -998, -997, -996, -995, -994]
+        );
+        assert_eq!(ASE_SUCCESS, 0x3f48_47a0);
+        assert_eq!(
+            [
+                K_SYSTEM_TIME_VALID,
+                K_SAMPLE_POSITION_VALID,
+                K_SAMPLE_RATE_VALID,
+                K_SPEED_VALID
+            ],
+            [1, 2, 4, 8]
+        );
+    }
+}
