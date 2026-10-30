@@ -4,7 +4,7 @@
 //! (the stack copied from iemmixer) whose pump hands each block to the
 //! instance's ASIO driver through the shared memory ([`bridge`]), the
 //! driver's registration ([`register`]) and the latencies the driver
-//! reports ([`latencies`]).
+//! reports ([`latencies`]), run as a Windows service ([`service`]).
 
 pub mod bridge;
 #[cfg(windows)]
@@ -14,6 +14,7 @@ pub mod probe;
 pub mod register;
 #[cfg(windows)]
 pub mod run;
+pub mod service;
 
 use iem_dante::clock::to_samples;
 use iem_dante::device::DeviceConfig;

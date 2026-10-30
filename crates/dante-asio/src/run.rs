@@ -16,8 +16,15 @@ use tracing::{info, warn};
 
 use crate::bridge::{Bridge, SharedLink};
 
-/// Runs instance `instance` from the device config at `config` on `ip`.
-pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(), String> {
+/// Runs instance `instance` from the device config at `config` on `ip`
+/// until Ctrl+C, the instance's stop event, `stop_asked` (the service's
+/// Stop) or the device's end.
+pub fn run(
+    instance: u32,
+    config: PathBuf,
+    ip: std::net::Ipv4Addr,
+    stop_asked: Arc<AtomicBool>,
+) -> Result<(), String> {
     let cfg = host::read_config(&config).map_err(|e| e.to_string())?;
     // The process on its own cores first: it starts with its parent's set
     // (on the FOH PC Process Lasso moves it later), and a thread cannot be
@@ -118,7 +125,10 @@ pub fn run(instance: u32, config: PathBuf, ip: std::net::Ipv4Addr) -> Result<(),
             );
             info!(status = %iem_dante::ctl::answer("status", &media), "device status");
         }
-        if asked.load(Ordering::Acquire) || stop_event.is_set() {
+        if asked.load(Ordering::Acquire)
+            || stop_event.is_set()
+            || stop_asked.load(Ordering::Acquire)
+        {
             info!("a stop was asked");
             break None;
         }

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `dante-asio run --instance <n> --config <device.toml> --ip <address>`:
-//! one instance's Dante device and its shared memory for the driver.
+//! one instance's Dante device and its shared memory for the driver;
+//! `dante-asio service ...` (same flags): the same, as the SCM starts it.
 //! `dante-asio register --instance <n> --dll <path> [--name <shown to DAWs>]` and
 //! `dante-asio unregister --instance <n>`: the driver's registry entries
 //! (administrator).
@@ -11,6 +12,7 @@ use std::process::ExitCode;
 fn usage() -> ExitCode {
     eprintln!(
         "usage: dante-asio run --instance <n> --config <device.toml> --ip <address> [--log <file>]\n       \
+         dante-asio service --instance <n> --config <device.toml> --ip <address> --log <file>\n       \
          dante-asio register --instance <n> --dll <path> [--name <shown to DAWs>]\n       \
          dante-asio stop --instance <n>\n       \
          dante-asio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
@@ -96,14 +98,18 @@ fn main() -> ExitCode {
                 None => return usage(),
             }
         }
-        "run" => {
+        "run" | "service" => {
             let (Some(config), Some(ip)) = (
                 flag(&args, "--config"),
                 flag(&args, "--ip").and_then(|ip| ip.parse().ok()),
             ) else {
                 return usage();
             };
-            run(instance, config.into(), ip)
+            if cmd == "service" {
+                service(instance, config.into(), ip)
+            } else {
+                run(instance, config.into(), ip)
+            }
         }
         _ => return usage(),
     };
@@ -177,7 +183,26 @@ fn stop(_instance: u32) -> Result<(), String> {
 
 #[cfg(windows)]
 fn run(instance: u32, config: std::path::PathBuf, ip: std::net::Ipv4Addr) -> Result<(), String> {
-    dante_asio::run::run(instance, config, ip)
+    let never = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    dante_asio::run::run(instance, config, ip, never)
+}
+
+#[cfg(windows)]
+fn service(
+    instance: u32,
+    config: std::path::PathBuf,
+    ip: std::net::Ipv4Addr,
+) -> Result<(), String> {
+    dante_asio::service::windows::dispatch(instance, config, ip)
+}
+
+#[cfg(not(windows))]
+fn service(
+    _instance: u32,
+    _config: std::path::PathBuf,
+    _ip: std::net::Ipv4Addr,
+) -> Result<(), String> {
+    Err("Windows only".into())
 }
 
 #[cfg(not(windows))]
