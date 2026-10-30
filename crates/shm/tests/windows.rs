@@ -41,3 +41,72 @@ fn opening_an_instance_no_device_made_is_not_found() {
     let e = Shared::open(93).err().unwrap();
     assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
 }
+
+
+// A DAW may run as another user than the device (the FOH PC's master Ableton
+// does) and the device runs elevated: without an explicit DACL only the
+// device's own user reaches the objects, and the driver silently free-runs.
+#[test]
+fn any_signed_in_user_reaches_the_objects() {
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
+        SE_KERNEL_OBJECT,
+    };
+    use windows_sys::Win32::Security::DACL_SECURITY_INFORMATION;
+    use windows_sys::Win32::System::Memory::OpenFileMappingW;
+    use windows_sys::Win32::System::Threading::OpenEventW;
+
+    const READ_CONTROL: u32 = 0x0002_0000;
+    let instance = 77;
+    let _device = Shared::create(instance, Shape::new(2, 2, 64).unwrap(), 96000, (0, 0)).unwrap();
+    for what in ["shm", "block", "ready"] {
+        let n: Vec<u16> = format!("Local\\dante-asio-{instance}-{what}\0")
+            .encode_utf16()
+            .collect();
+        // SAFETY: a valid NUL-terminated name.
+        let h = unsafe {
+            if what == "shm" {
+                OpenFileMappingW(READ_CONTROL, 0, n.as_ptr())
+            } else {
+                OpenEventW(READ_CONTROL, 0, n.as_ptr())
+            }
+        };
+        assert!(!h.is_null(), "{what}");
+        let mut sd = std::ptr::null_mut();
+        let mut text = std::ptr::null_mut();
+        // SAFETY: a valid handle; the out pointers live; both results freed.
+        let sddl = unsafe {
+            assert_eq!(
+                GetSecurityInfo(
+                    h,
+                    SE_KERNEL_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut sd,
+                ),
+                0
+            );
+            assert_ne!(
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    sd,
+                    SDDL_REVISION_1,
+                    DACL_SECURITY_INFORMATION,
+                    &mut text,
+                    std::ptr::null_mut(),
+                ),
+                0
+            );
+            let len = (0..).take_while(|&i| *text.add(i) != 0).count();
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+            LocalFree(text.cast());
+            LocalFree(sd);
+            CloseHandle(h);
+            s
+        };
+        assert!(sddl.contains(";;;AU)"), "{what}: {sddl}");
+    }
+}
