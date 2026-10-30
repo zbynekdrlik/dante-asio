@@ -11,6 +11,8 @@
 pub mod abi;
 pub mod guard;
 pub mod ident;
+pub mod liveness;
+pub mod reset;
 
 #[cfg(windows)]
 mod com;

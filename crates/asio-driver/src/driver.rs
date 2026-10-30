@@ -13,9 +13,13 @@
 //! - Nothing the driver does reaches the DAW as a crash or a hang: every
 //!   method runs in [`guard`], locks survive a panic, and a worker stuck in
 //!   the DAW's own callback is abandoned after [`STOP_WAIT`].
+//! - Once a second the worker reads the device's state from the header
+//!   ([`Watch`]): a device back with another shape gets the DAW a
+//!   `kAsioResetRequest`, within the instance's [`Budget`]; blocks the
+//!   worker skipped are counted in the header's `missed`.
 
 use core::ffi::{c_char, c_void};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -30,7 +34,9 @@ use windows_sys::Win32::System::Threading::{
 use crate::abi::*;
 use crate::com::OBJECTS;
 use crate::guard::{guard, join_within, lock};
-use crate::ident::{driver_name, instance_of};
+use crate::ident::{MAX_INSTANCES, driver_name, instance_of};
+use crate::liveness::{Facts, Verdict, Watch};
+use crate::reset::Budget;
 
 /// The rate: Dante at 96 kHz.
 pub const RATE: f64 = 96_000.0;
@@ -47,6 +53,13 @@ const QUIET: Duration = Duration::from_millis(50);
 /// The longest a DAW's thread waits for the worker to end; past it the
 /// worker (stuck in the DAW's callback) is abandoned.
 pub const STOP_WAIT: Duration = Duration::from_secs(1);
+/// How often the worker reads the device's state.
+const CHECK_EVERY: Duration = Duration::from_secs(1);
+
+/// Each instance's reset requests in this process (a host makes a new
+/// driver object after a reset, so the budget outlives the object).
+static BUDGETS: Mutex<[Budget; MAX_INSTANCES as usize]> =
+    Mutex::new([const { Budget::new() }; MAX_INSTANCES as usize]);
 
 #[repr(C)]
 pub struct Driver {
@@ -70,6 +83,10 @@ struct Rt {
     /// The instance's mapping, opened once per driver object (a host makes
     /// a new object after a reset), read without a lock.
     shm: OnceLock<Arc<Shared>>,
+    /// The device's last verdict (`Verdict as u8 + 1`; 0 before any).
+    verdict: AtomicU8,
+    /// Device restarts the worker saw.
+    restarts: AtomicU32,
 }
 
 #[derive(Default)]
@@ -140,6 +157,8 @@ impl Driver {
                 position: AtomicU64::new(0),
                 systime_ms: AtomicU64::new(0),
                 shm: OnceLock::new(),
+                verdict: AtomicU8::new(0),
+                restarts: AtomicU32::new(0),
             }),
         }))
         .cast()
@@ -295,8 +314,18 @@ unsafe extern "system" fn get_driver_version(_this: *mut c_void) -> i32 {
 unsafe extern "system" fn get_error_message(this: *mut c_void, text: *mut c_char) {
     guard((), || {
         // SAFETY: a live Driver.
-        let e = lock(&unsafe { me(this) }.state).error.clone();
-        write_c(text, &e, 124);
+        let d = unsafe { me(this) };
+        let e = lock(&d.state).error.clone();
+        let device = device_text(
+            d.rt.verdict.load(Ordering::Acquire),
+            d.rt.restarts.load(Ordering::Acquire),
+        );
+        let text_all = match (e.is_empty(), device.is_empty()) {
+            (_, true) => e,
+            (true, false) => device,
+            (false, false) => format!("{e}; {device}"),
+        };
+        write_c(text, &text_all, 124);
     })
 }
 
@@ -686,10 +715,16 @@ impl Job {
         let mut next = Instant::now();
         let mut half = 0i32;
         let mut checked = Instant::now();
+        let mut watch = shm
+            .as_ref()
+            .map(|s| Watch::new(self.shape, facts(s), Instant::now()));
         let mut last = self.seen;
         while !self.stop.load(Ordering::Acquire) {
-            match shm.as_ref() {
-                Some(s) => {
+            match (shm.as_ref(), watch.as_mut()) {
+                (Some(s), Some(watch)) => {
+                    if self.check(s, watch, &mut checked) {
+                        return;
+                    }
                     // The next block (see next_seq). Past QUIET without one,
                     // the device is quiet: the DAW keeps its clock on silence.
                     let Some(seq) = self.next_seq(s, last) else {
@@ -698,6 +733,11 @@ impl Job {
                         self.switch(&mut time, half);
                         continue;
                     };
+                    if seq > last + 1 {
+                        s.header()
+                            .missed
+                            .fetch_add(seq - last - 1, Ordering::Relaxed);
+                    }
                     last = seq;
                     half = (seq % 2) as i32;
                     self.rt.seq_in_hand.store(seq, Ordering::Release);
@@ -708,7 +748,7 @@ impl Job {
                         s.signal_ready();
                     }
                 }
-                None => {
+                _ => {
                     // Free-run on our own clock; a device that appears asks
                     // the DAW for a reset (it then opens the real buffers).
                     next += period;
@@ -722,14 +762,45 @@ impl Job {
                     self.switch(&mut time, half);
                     if checked.elapsed() > Duration::from_secs(1) {
                         checked = Instant::now();
-                        if Shared::open(self.instance).is_ok() {
-                            self.message(K_ASIO_RESET_REQUEST);
+                        if Shared::open(self.instance).is_ok() && self.ask_reset(checked) {
                             return;
                         }
                     }
                 }
             }
         }
+    }
+
+    /// Once every [`CHECK_EVERY`]: the device's verdict, kept for
+    /// `getErrorMessage`; `true` when the worker ends because a reshaped
+    /// device got the DAW a reset request.
+    fn check(&self, s: &Shared, watch: &mut Watch, checked: &mut Instant) -> bool {
+        let now = Instant::now();
+        if now.duration_since(*checked) < CHECK_EVERY {
+            return false;
+        }
+        *checked = now;
+        let v = watch.observe(facts(s), now);
+        self.rt.verdict.store(v as u8 + 1, Ordering::Release);
+        if v == Verdict::Restarted {
+            self.rt.restarts.fetch_add(1, Ordering::Relaxed);
+        }
+        v == Verdict::Reshaped && self.ask_reset(now)
+    }
+
+    /// Asks the DAW for a reset if the instance's budget allows; whether it
+    /// did.
+    fn ask_reset(&self, now: Instant) -> bool {
+        let mut budgets = lock(&BUDGETS);
+        let allowed = (self.instance as usize)
+            .checked_sub(1)
+            .and_then(|i| budgets.get_mut(i))
+            .is_some_and(|b| b.take(now));
+        drop(budgets);
+        if allowed {
+            self.message(K_ASIO_RESET_REQUEST);
+        }
+        allowed
     }
 
     /// The device's next published block after `last`: a short spin on the
@@ -801,6 +872,35 @@ impl Job {
             // SAFETY: the host's callback.
             unsafe { f(half, ASIO_TRUE) };
         }
+    }
+}
+
+/// What the header shows of the device now.
+fn facts(s: &Shared) -> Facts {
+    let h = s.header();
+    Facts {
+        beat: h.heartbeat_ms.load(Ordering::Acquire),
+        pid: h.device_pid.load(Ordering::Acquire),
+        shape: Shape::new(
+            h.rx.load(Ordering::Acquire),
+            h.tx.load(Ordering::Acquire),
+            h.block.load(Ordering::Acquire),
+        ),
+    }
+}
+
+/// The device's verdict for `getErrorMessage` (empty while live).
+fn device_text(verdict: u8, restarts: u32) -> String {
+    let state = match verdict {
+        v if v == Verdict::Stale as u8 + 1 => "the device stopped (no heartbeat)",
+        v if v == Verdict::Reshaped as u8 + 1 => "the device changed its block or channels",
+        _ => "",
+    };
+    match (state.is_empty(), restarts) {
+        (true, 0) => String::new(),
+        (true, n) => format!("the device restarted {n} times"),
+        (false, 0) => state.to_string(),
+        (false, n) => format!("{state}; it restarted {n} times"),
     }
 }
 

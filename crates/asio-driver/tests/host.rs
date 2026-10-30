@@ -409,3 +409,50 @@ fn an_unknown_clsid_is_not_available() {
     assert_eq!(hr, CLASS_E_CLASSNOTAVAILABLE);
     assert!(f.is_null());
 }
+
+#[test]
+fn blocks_the_driver_skipped_are_counted_in_the_header() {
+    let shape = Shape::new(1, 1, 32).unwrap();
+    let device = Shared::create(10, shape, 96_000, (56, 40)).unwrap();
+    let d = driver(10);
+    let mut infos: Vec<ASIOBufferInfo> = (0..2)
+        .map(|k| ASIOBufferInfo {
+            isInput: k,
+            channelNum: 0,
+            buffers: [core::ptr::null_mut(); 2],
+        })
+        .collect();
+    let cb = ASIOCallbacks {
+        bufferSwitch: Some(ignore),
+        sampleRateDidChange: None,
+        asioMessage: Some(message),
+        bufferSwitchTimeInfo: None,
+    };
+    // SAFETY: as a host.
+    unsafe {
+        assert_eq!((vt(d).init)(d, core::ptr::null_mut()), ASIO_TRUE);
+        assert_eq!(
+            (vt(d).createBuffers)(d, infos.as_mut_ptr(), 2, 32, &cb),
+            ASE_OK
+        );
+        assert_eq!((vt(d).start)(d), ASE_OK);
+    }
+    let h = device.header();
+    h.seq.store(1, Ordering::Release);
+    device.signal_block();
+    assert!(device.wait_ready(1000), "block 1 handed over");
+    assert_eq!(h.ack.load(Ordering::Acquire), 1);
+    assert_eq!(h.missed.load(Ordering::Acquire), 0, "nothing skipped yet");
+    // Blocks 2 and 3 were published while the driver looked away.
+    h.seq.store(4, Ordering::Release);
+    device.signal_block();
+    assert!(device.wait_ready(1000), "block 4 handed over");
+    assert_eq!(h.ack.load(Ordering::Acquire), 4);
+    assert_eq!(h.missed.load(Ordering::Acquire), 2);
+    // SAFETY: as a host ends.
+    unsafe {
+        (vt(d).stop)(d);
+        (vt(d).disposeBuffers)(d);
+        (vt(d).Release)(d);
+    }
+}
