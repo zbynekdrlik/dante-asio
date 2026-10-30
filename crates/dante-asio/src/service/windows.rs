@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use iem_dante::host::ClockSource;
 use tracing::{error, info, warn};
 use windows_service::service::{
     ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
@@ -22,6 +23,7 @@ struct Args {
     instance: u32,
     config: PathBuf,
     ip: Ipv4Addr,
+    clock: ClockSource,
 }
 
 static ARGS: OnceLock<Args> = OnceLock::new();
@@ -29,11 +31,17 @@ static ARGS: OnceLock<Args> = OnceLock::new();
 define_windows_service!(ffi_service_main, service_main);
 
 /// Hands this process to the SCM until the service stops.
-pub fn dispatch(instance: u32, config: PathBuf, ip: Ipv4Addr) -> Result<(), String> {
+pub fn dispatch(
+    instance: u32,
+    config: PathBuf,
+    ip: Ipv4Addr,
+    clock: ClockSource,
+) -> Result<(), String> {
     ARGS.set(Args {
         instance,
         config,
         ip,
+        clock,
     })
     .map_err(|_| "the service was dispatched twice")?;
     info!(instance, service = %name(instance), "handing the process to the SCM");
@@ -106,7 +114,13 @@ fn service_main(_args: Vec<OsString>) {
         error!(%e, "Running not reported");
     }
     info!(instance = args.instance, "service running");
-    let result = crate::run::run(args.instance, args.config.clone(), args.ip, stop);
+    let result = crate::run::run(
+        args.instance,
+        args.config.clone(),
+        args.ip,
+        args.clock,
+        stop,
+    );
     let code = exit_code(&result);
     match &result {
         Ok(()) => info!("service stopped"),

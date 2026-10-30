@@ -17,12 +17,14 @@ use tracing::{info, warn};
 use crate::bridge::{Bridge, SharedLink};
 
 /// Runs instance `instance` from the device config at `config` on `ip`
-/// until Ctrl+C, the instance's stop event, `stop_asked` (the service's
-/// Stop) or the device's end.
+/// with the media clock from `clock` (dantesync in production; the system
+/// clock only for a test machine without one) until Ctrl+C, the instance's
+/// stop event, `stop_asked` (the service's Stop) or the device's end.
 pub fn run(
     instance: u32,
     config: PathBuf,
     ip: std::net::Ipv4Addr,
+    clock: host::ClockSource,
     stop_asked: Arc<AtomicBool>,
 ) -> Result<(), String> {
     let cfg = host::read_config(&config).map_err(|e| e.to_string())?;
@@ -55,7 +57,13 @@ pub fn run(
         control: PathBuf::new(),
     };
     let engine_tx: Vec<usize> = (0..cfg.tx.len()).collect();
-    let prepared = host::prepare(&opts, &engine_tx).map_err(|e| e.to_string())?;
+    if clock != host::ClockSource::Dantesync {
+        warn!(
+            ?clock,
+            "test clock: PTP time is this machine's clock, not the network's"
+        );
+    }
+    let prepared = host::prepare_with(&opts, &engine_tx, clock).map_err(|e| e.to_string())?;
     let cfg = prepared.config().clone();
     let media = prepared.media();
     for &tx in &engine_tx {

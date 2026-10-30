@@ -11,8 +11,8 @@ use std::process::ExitCode;
 
 fn usage() -> ExitCode {
     eprintln!(
-        "usage: dante-asio run --instance <n> --config <device.toml> --ip <address> [--log <file>]\n       \
-         dante-asio service --instance <n> --config <device.toml> --ip <address> --log <file>\n       \
+        "usage: dante-asio run --instance <n> --config <device.toml> --ip <address> [--log <file>] [--clock system]\n       \
+         dante-asio service --instance <n> --config <device.toml> --ip <address> --log <file> [--clock system]\n       \
          dante-asio register --instance <n> --dll <path> [--name <shown to DAWs>]\n       \
          dante-asio stop --instance <n>\n       \
          dante-asio probe --instance <n> [--seconds <s>] [--affinity <hex mask>]\n       \
@@ -105,10 +105,17 @@ fn main() -> ExitCode {
             ) else {
                 return usage();
             };
+            // `--clock system`: a test machine's own clock (CI has no
+            // dantesync); never on a real Dante network.
+            let system_clock = match flag(&args, "--clock").as_deref() {
+                None | Some("dantesync") => false,
+                Some("system") => true,
+                Some(_) => return usage(),
+            };
             if cmd == "service" {
-                service(instance, config.into(), ip)
+                service(instance, config.into(), ip, system_clock)
             } else {
-                run(instance, config.into(), ip)
+                run(instance, config.into(), ip, system_clock)
             }
         }
         _ => return usage(),
@@ -182,9 +189,23 @@ fn stop(_instance: u32) -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn run(instance: u32, config: std::path::PathBuf, ip: std::net::Ipv4Addr) -> Result<(), String> {
+fn run(
+    instance: u32,
+    config: std::path::PathBuf,
+    ip: std::net::Ipv4Addr,
+    system_clock: bool,
+) -> Result<(), String> {
     let never = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    dante_asio::run::run(instance, config, ip, never)
+    dante_asio::run::run(instance, config, ip, clock(system_clock), never)
+}
+
+#[cfg(windows)]
+fn clock(system: bool) -> iem_dante::host::ClockSource {
+    if system {
+        iem_dante::host::ClockSource::System
+    } else {
+        iem_dante::host::ClockSource::Dantesync
+    }
 }
 
 #[cfg(windows)]
@@ -192,8 +213,9 @@ fn service(
     instance: u32,
     config: std::path::PathBuf,
     ip: std::net::Ipv4Addr,
+    system_clock: bool,
 ) -> Result<(), String> {
-    dante_asio::service::windows::dispatch(instance, config, ip)
+    dante_asio::service::windows::dispatch(instance, config, ip, clock(system_clock))
 }
 
 #[cfg(not(windows))]
@@ -201,6 +223,7 @@ fn service(
     _instance: u32,
     _config: std::path::PathBuf,
     _ip: std::net::Ipv4Addr,
+    _system_clock: bool,
 ) -> Result<(), String> {
     Err("Windows only".into())
 }
@@ -216,7 +239,12 @@ fn remove(_keys: &[String]) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-fn run(_instance: u32, _config: std::path::PathBuf, _ip: std::net::Ipv4Addr) -> Result<(), String> {
+fn run(
+    _instance: u32,
+    _config: std::path::PathBuf,
+    _ip: std::net::Ipv4Addr,
+    _system_clock: bool,
+) -> Result<(), String> {
     Err("Windows only".into())
 }
 
