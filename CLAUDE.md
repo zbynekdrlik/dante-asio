@@ -1,5 +1,7 @@
 # dante-asio
 
+> **Renamed 31.10.2026: this project was `dante-asio` and is now `dasio`** (repo, account, paths; `dante-stack` is `dstack`, `dante-asio` is `dasio`). The repo content still uses the old names. Do issue #3 first, then delete this note.
+
 A Windows ASIO driver whose audio goes straight to our own Dante device (one device process per instance).
 Design: `docs/design/2026-10-29-dante-asio-design.md`; MVP plan: `docs/plans/2026-10-29-dante-asio-mvp-plan.md`.
 
