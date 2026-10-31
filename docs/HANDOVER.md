@@ -13,7 +13,7 @@ Next: consume `dante-stack` instead of the local `iem-dante` copy once that repo
 - FOH PC: MCP `win-ableton-foh`, the target of all of this.
 - SNV Resolume PC with DVS: MCP `win-resolume-snv`, used for Dante receive checks.
 - dev1: this account. No local cargo: GitHub CI builds and tests.
-- Addresses: `~/.config/dante-asio/SITE.md`.
+- Addresses: `~/.config/dasio/SITE.md`.
 
 ## What else acts on the machines
 
@@ -29,7 +29,7 @@ Tests subscribe our own device to itself. For a device check read the receiver's
 
 ## Site facts
 
-Private, on this account: `~/.config/dante-asio/SITE.md`, `ablfoh-1.toml`, `master.toml`, `tools/`.
+Private, on this account: `~/.config/dasio/SITE.md`, `ablfoh-1.toml`, `master.toml`, `tools/`.
 
 ## Runners
 

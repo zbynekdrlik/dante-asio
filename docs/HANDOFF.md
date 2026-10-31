@@ -1,6 +1,6 @@
 # Hand-off: dante-asio's own session (2026-10-30)
 
-This project was started from an iemmixer session. Work continues here, in this repository's own session. Read this, `CLAUDE.md`, the design and issue #1. Site facts (addresses, real names) stay private: `~/.config/dante-asio/SITE.md`, tools beside it.
+This project was started from an iemmixer session. Work continues here, in this repository's own session. Read this, `CLAUDE.md`, the design and issue #1. Site facts (addresses, real names) stay private: `~/.config/dasio/SITE.md`, tools beside it.
 
 ## State
 
